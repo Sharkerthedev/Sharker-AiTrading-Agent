@@ -2,3 +2,6 @@ python-telegram-bot==20.7
 requests==2.31.0
 pandas==2.2.0
 ta
+chromadb
+sentence-transformers
+langchain-text-splitters
