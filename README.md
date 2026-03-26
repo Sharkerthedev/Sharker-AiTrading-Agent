@@ -1,163 +1,91 @@
-Crypto AI Bot v2 (Gemini + RAG)
-📖 Giới thiệu
-Crypto AI Bot v2 là một trợ lý giao dịch tiền điện tử thông minh tích hợp trong Telegram, sử dụng AI Gemini của Google kết hợp với bộ nhớ dài hạn RAG (Retrieval-Augmented Generation). Bot có khả năng phân tích kỹ thuật (TA) chuyên sâu, học hỏi từ người dùng và nhớ kiến thức lâu dài.
+# 🤖 Crypto AI Bot v2 (Gemini + RAG)
 
-🚀 Tính năng chính
-📊 Phân tích kỹ thuật (TA)
-Chỉ báo đầy đủ: EMA (5,13,50,200,800), RSI(14), MACD, Bollinger Bands, Volume SMA20
+[![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
+[![Telegram](https://img.shields.io/badge/Telegram-Bot-blue.svg)](https://core.telegram.org/bots)
+[![Gemini](https://img.shields.io/badge/Gemini-AI-orange.svg)](https://ai.google.dev/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Hỗ trợ/kháng cự: Tự động xác định vùng hỗ trợ và kháng cự gần nhất
+**Crypto AI Bot v2** là một trợ lý giao dịch tiền điện tử thông minh trên Telegram, sử dụng AI Gemini của Google kết hợp với bộ nhớ dài hạn RAG (Retrieval-Augmented Generation). Bot có khả năng phân tích kỹ thuật (TA) chuyên sâu, học hỏi từ người dùng và nhớ kiến thức lâu dài.
 
-Nhiều khung thời gian: Hỗ trợ 1h, 4h, 1d, 1w
+---
 
-Dữ liệu realtime: Lấy từ CryptoCompare (tổng hợp 300+ sàn)
+## ✨ Tính năng nổi bật
 
-🧠 AI Gemini tích hợp
-Phân tích thông minh: Gemini 2.5 Flash đọc và giải thích các chỉ báo TA
+### 📊 Phân tích kỹ thuật (TA)
+- **Chỉ báo đầy đủ:** EMA5, EMA13, EMA50, EMA200, EMA800, RSI(14), MACD, Bollinger Bands, Volume SMA20
+- **Hỗ trợ/kháng cự:** Tự động xác định vùng hỗ trợ và kháng cự gần nhất
+- **Nhiều khung thời gian:** Hỗ trợ 1h, 4h, 1d, 1w
+- **Dữ liệu realtime:** Lấy từ CryptoCompare (tổng hợp 300+ sàn giao dịch)
 
-Nhận diện ảnh: Phân tích chart qua ảnh chụp màn hình (Gemini Vision)
+### 🧠 AI Gemini tích hợp
+- **Phân tích thông minh:** Gemini 2.5 Flash đọc và giải thích các chỉ báo TA
+- **Nhận diện ảnh:** Phân tích chart qua ảnh chụp màn hình (Gemini Vision)
+- **Trả lời tự nhiên:** Hiểu tiếng Việt, trả lời như trader kinh nghiệm
 
-Trả lời tự nhiên: Hiểu tiếng Việt, trả lời như trader kinh nghiệm
+### 📚 Bộ nhớ dài hạn (RAG)
+- **Học từ kinh nghiệm:** Tự động lưu các phân tích TA vào vector database
+- **Nhớ qua nhiều ngày:** Bot nhớ những nhận định từ tuần trước
+- **Tìm kiếm thông minh:** Khi hỏi, bot tìm kiếm kiến thức liên quan nhất
+- **Càng dùng càng thông minh:** Tích lũy kiến thức theo thời gian
 
-📚 Bộ nhớ dài hạn (RAG)
-Học từ kinh nghiệm: Tự động lưu các phân tích TA vào vector database
+### 🎓 Học từ người dùng
+- **Lệnh `/teach`:** Dạy bot các mẫu hình, quy tắc, chiến lược mới
+- **Lưu vào RAG:** Kiến thức được lưu trữ dài hạn và tự động áp dụng
+- **Xem kiến thức:** Lệnh `/memory` để xem bot đã học được gì
 
-Nhớ qua nhiều ngày: Bot nhớ những nhận định từ tuần trước
+### 💾 Bộ nhớ ngắn hạn
+- **Nhớ cuộc hội thoại:** Lưu 10 tin nhắn gần nhất để theo kịp ngữ cảnh
+- **SQLite:** Lưu trữ nhẹ, không cần cài database riêng
 
-Tìm kiếm thông minh: Khi hỏi, bot tìm kiếm kiến thức liên quan nhất
+---
 
-Càng dùng càng thông minh: Tích lũy kiến thức theo thời gian
+## 📋 Các lệnh hỗ trợ
 
-🎓 Học từ người dùng
-Lệnh /teach: Dạy bot các mẫu hình, quy tắc, chiến lược mới
+| Lệnh | Mô tả | Ví dụ |
+|------|-------|-------|
+| `/start` | Khởi động và hướng dẫn sử dụng | `/start` |
+| `/price` | Xem giá hiện tại của coin | `/price btc` |
+| `/ta` | Phân tích kỹ thuật chi tiết | `/ta btc 1h` |
+| `/news` | Tin tức mới nhất về crypto | `/news` hoặc `/news btc` |
+| `/ask` | Hỏi trực tiếp Gemini | `/ask RSI 30 có phải oversold?` |
+| `/teach` | Dạy bot pattern/kiến thức mới | `/teach Bullish Engulfing \| Nến xanh bao trùm nến đỏ` |
+| `/patterns` | Xem các pattern đã dạy | `/patterns` |
+| `/memory` | Xem kiến thức bot đã học (RAG) | `/memory` |
 
-Lưu vào RAG: Kiến thức được lưu trữ dài hạn và tự động áp dụng
+---
 
-Xem kiến thức: Lệnh /memory để xem bot đã học được gì
+## 🗣️ Chat tự nhiên
 
-💾 Bộ nhớ ngắn hạn
-Nhớ cuộc hội thoại: Lưu 10 tin nhắn gần nhất để theo kịp ngữ cảnh
-
-SQLite: Lưu trữ nhẹ, không cần cài database riêng
-
-📋 Các lệnh hỗ trợ
-Lệnh	Mô tả	Ví dụ
-/start	Khởi động và hướng dẫn sử dụng	/start
-/price	Xem giá hiện tại của coin	/price btc
-/ta	Phân tích kỹ thuật chi tiết	/ta btc 1h
-/news	Tin tức mới nhất về crypto	/news hoặc /news btc
-/ask	Hỏi trực tiếp Gemini	/ask RSI 30 có phải oversold?
-/teach	Dạy bot pattern/kiến thức mới	/teach Bullish Engulfing | Nến xanh bao trùm nến đỏ
-/patterns	Xem các pattern đã dạy	/patterns
-/memory	Xem kiến thức bot đã học (RAG)	/memory
-🗣️ Chat tự nhiên
 Bot hiểu ngôn ngữ tự nhiên tiếng Việt:
 
-Hỏi giá: "btc giá bao nhiêu", "eth mấy đô"
+| Bạn hỏi | Bot hiểu |
+|---------|----------|
+| *"btc giá bao nhiêu"* | Trả về giá BTC hiện tại |
+| *"phân tích sol"* | Phân tích TA cho SOL |
+| *"btc hôm nay nên long hay short?"* | Phân tích xu hướng và đưa ra nhận định |
+| *"có tin gì về crypto không"* | Lấy tin tức mới nhất |
+| *"eth mấy đô"* | Trả về giá ETH |
 
-Hỏi phân tích: "phân tích sol", "chart btc hôm nay thế nào"
+---
 
-Hỏi quyết định: "btc hôm nay nên long hay short?", "có nên mua eth không?"
+## 🖼️ Phân tích ảnh
 
-Hỏi tin tức: "có tin gì về crypto không", "news btc"
-
-🖼️ Phân tích ảnh
 Gửi ảnh chart (JPEG/PNG) kèm caption hoặc không, bot sẽ:
+1. Tải ảnh về và chuyển sang base64
+2. Gửi cho Gemini Vision phân tích
+3. Trả về nhận định về chỉ báo, xu hướng
 
-Tải ảnh về và chuyển sang base64
+---
 
-Gửi cho Gemini Vision phân tích
+## 🔧 Cài đặt
 
-Trả về nhận định về chỉ báo, xu hướng
+### Yêu cầu hệ thống
+- Python 3.9 trở lên
+- Telegram Bot Token (từ [@BotFather](https://t.me/BotFather))
+- Gemini API Key (từ [Google AI Studio](https://aistudio.google.com/))
+- CryptoCompare API Key (đăng ký miễn phí tại [CryptoCompare](https://www.cryptocompare.com/))
 
-🔧 Cài đặt
-Yêu cầu
-Python 3.9+
-
-Telegram Bot Token (từ @BotFather)
-
-Gemini API Key (từ Google AI Studio)
-
-CryptoCompare API Key (đăng ký miễn phí)
-
-Cài đặt thư viện
-bash
-pip install python-telegram-bot pandas requests ta chromadb sentence-transformers langchain-text-splitters
-Biến môi trường
-bash
-export TELEGRAM_TOKEN="your_bot_token"
-export GEMINI_API_KEY="your_gemini_key"
-export CRYPTOCOMPARE_KEY="your_cryptocompare_key"
-export OWNER_ID="your_telegram_user_id"
-Chạy bot
-bash
-python bot.py
-🧠 Kiến trúc
-text
-┌─────────────────────────────────────────────────────────┐
-│                     Telegram Bot                        │
-├─────────────────────────────────────────────────────────┤
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
-│  │   Gemini AI  │  │  TA Engine   │  │  Knowledge   │  │
-│  │  (text+vision│  │ (EMA,RSI,...)│  │  (patterns)  │  │
-│  └──────────────┘  └──────────────┘  └──────────────┘  │
-├─────────────────────────────────────────────────────────┤
-│  ┌──────────────┐  ┌──────────────┐                    │
-│  │   Short-term │  │   Long-term  │                    │
-│  │   Memory     │  │   Memory     │                    │
-│  │   (SQLite)   │  │   (RAG)      │                    │
-│  │  10 messages │  │  ChromaDB    │                    │
-│  └──────────────┘  └──────────────┘                    │
-└─────────────────────────────────────────────────────────┘
-📁 Cấu trúc file
-text
-bot/
-├── bot.py              # File chính
-├── ta_engine.py        # Tính toán chỉ báo TA
-├── knowledge.py        # Quản lý pattern (JSON)
-├── rag_memory.py       # Bộ nhớ dài hạn (ChromaDB)
-├── chat_memory.db      # SQLite - short-term memory
-├── chroma_data/        # Vector database - long-term memory
-└── patterns.json       # Lưu pattern đã dạy
-🔐 Bảo mật
-Bot chỉ phản hồi chủ nhân (kiểm tra Telegram User ID)
-
-API keys được lưu qua biến môi trường
-
-Private key không được lưu trong code
-
-Dữ liệu local, không gửi ra ngoài
-
-🚧 Giới hạn và lưu ý
-RAG cần thời gian: Bot càng dùng lâu càng thông minh
-
-Chi phí Gemini: Với Tier 1, chi phí ~$1-3/tháng tùy tần suất
-
-Dữ liệu CryptoCompare: Free tier 100k requests/tháng
-
-Không phải lời khuyên tài chính: Bot chỉ phân tích kỹ thuật, quyết định giao dịch là của bạn
-
-🛠️ Phát triển tiếp theo
-Thêm Fibonacci retracement tự động
-
-Tích hợp X (Twitter) scraping
-
-Paper trading (giao dịch giả lập)
-
-Cảnh báo tự động khi có tín hiệu
-
-Hỗ trợ nhiều người dùng
-
-📝 Giấy phép
-MIT License
-
-🙏 Cảm ơn
-Google Gemini API
-
-python-telegram-bot
-
-CryptoCompare
-
-ChromaDB
-
-Bot của bạn – Trợ lý giao dịch thông minh, học hỏi và nhớ lâu! 🚀
+### 1. Clone repository
+```bash
+git clone https://github.com/yourusername/crypto-ai-bot.git
+cd crypto-ai-bot
