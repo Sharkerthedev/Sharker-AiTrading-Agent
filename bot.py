@@ -3,18 +3,27 @@ import requests
 import datetime
 import base64
 import re
+import sys
+import json
+import subprocess
+import sqlite3
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, MessageHandler,
     CommandHandler, filters, ContextTypes
 )
+
+# Các module nội bộ
 from ta_engine import analyze_ta, get_ohlcv
 from knowledge import save_pattern, get_patterns, list_patterns
+from paper_trade import paper_balance, paper_buy, paper_sell, paper_history, init_paper_db
+from memory import init_memory_db, save_message, get_recent_messages, clear_memory
 
+# Lấy biến môi trường
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 CC_API_KEY = os.environ.get("CRYPTOCOMPARE_KEY")
-OWNER_ID = int(os.environ.get("OWNER_ID", 0))  # ID của bạn
+OWNER_ID = int(os.environ.get("OWNER_ID", 0))
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
@@ -34,17 +43,17 @@ TIMEFRAME_MAP = {
     "1d": "histoday", "1w": "histoday",
 }
 
-# ── Auth check ────────────────────────────────────────────
+# ----------------------------------------------------------------------
+# Hàm kiểm tra chủ nhân
 async def check_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Trả về True nếu người dùng là chủ nhân, nếu không thì gửi cảnh báo và trả về False."""
     user_id = update.effective_user.id
     if user_id != OWNER_ID:
         await update.message.reply_text("⛔ Bot này chỉ dành cho chủ nhân.")
         return False
     return True
 
-# ── Helpers ──────────────────────────────────────────────
-
+# ----------------------------------------------------------------------
+# Các helper (giá, news, Gemini, ...)
 def get_price(symbol: str) -> str:
     try:
         url = "https://min-api.cryptocompare.com/data/pricemultifull"
@@ -94,7 +103,15 @@ def get_news(symbol: str = None) -> str:
     except Exception as e:
         return f"Lỗi lấy news: {e}"
 
-def ask_gemini(user_message: str, context_data: str = "") -> str:
+def get_current_price(symbol: str) -> float:
+    try:
+        url = "https://min-api.cryptocompare.com/data/price"
+        r = requests.get(url, params={"fsym": symbol, "tsyms": "USD", "api_key": CC_API_KEY}, timeout=5)
+        return r.json()["USD"]
+    except:
+        return None
+
+def ask_gemini(user_message: str, context_data: str = "", history=None) -> str:
     try:
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         patterns = get_patterns()
@@ -119,6 +136,12 @@ def ask_gemini(user_message: str, context_data: str = "") -> str:
         if context_data:
             messages.append({"role": "user", "content": f"Dữ liệu thị trường:\n{context_data}"})
             messages.append({"role": "assistant", "content": "Đã nhận dữ liệu thị trường."})
+
+        if history:
+            for role, content in history:
+                if len(content) > 500:
+                    content = content[:500] + "..."
+                messages.append({"role": role, "content": content})
 
         messages.append({"role": "user", "content": user_message})
 
@@ -201,8 +224,8 @@ def detect_coin_in_text(text: str) -> str:
             return symbol
     return None
 
-# ── Handlers ─────────────────────────────────────────────
-
+# ----------------------------------------------------------------------
+# Các handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_owner(update, context):
         return
@@ -217,9 +240,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/ask [câu hỏi] — Hỏi AI crypto/TA\n"
         "/teach [tên] | [mô tả] — Dạy bot pattern mới\n"
         "/patterns — Xem pattern đã dạy\n\n"
-        "🖼️ Gửi ảnh (có hoặc không caption) để phân tích!\n\n"
-        "Chat tự nhiên tiếng Việt cũng được!\n"
-        "Ví dụ: 'btc hôm nay nên long hay short?'"
+        "📈 Paper Trade:\n"
+        "/paper_balance — Xem tài khoản ảo\n"
+        "/paper_buy btc 0.01 — Mua 0.01 BTC\n"
+        "/paper_sell btc 0.01 — Bán 0.01 BTC\n"
+        "/paper_history — Xem lịch sử giao dịch ảo\n\n"
+        "🧠 Bộ nhớ: bot nhớ 10 tin nhắn gần nhất\n"
+        "/clear_memory — Xóa bộ nhớ hội thoại\n\n"
+        "🖼️ Gửi ảnh (có caption) để phân tích chart!\n\n"
+        "Chat tự nhiên tiếng Việt: 'btc giá', 'phân tích eth', 'btc nên long hay short?'"
     )
 
 async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -237,7 +266,7 @@ async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     args = context.args
     if not args:
-        await update.message.reply_text("Dùng: /ta btc 1h  (timeframe: 1h, 4h, 1d)")
+        await update.message.reply_text("Dùng: /ta btc 1h (timeframe: 1h, 4h, 1d)")
         return
 
     symbol = COIN_MAP.get(args[0].lower(), args[0].upper())
@@ -254,11 +283,17 @@ async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ta_summary = analyze_ta(df)
     await update.message.reply_text(ta_summary["text"])
 
+    user_id = update.effective_user.id
+    history = get_recent_messages(user_id, limit=10)
     gemini_answer = ask_gemini(
         f"Phân tích kỹ thuật {symbol} timeframe {tf}. "
         "Xu hướng hiện tại? Vùng support/resistance quan trọng? Nên chờ gì?",
-        context_data=ta_summary["data_for_grok"]
+        context_data=ta_summary["data_for_grok"],
+        history=history
     )
+    # Lưu tin nhắn và phản hồi
+    save_message(user_id, "user", f"/ta {symbol} {tf}")
+    save_message(user_id, "assistant", gemini_answer)
     await update.message.reply_text(f"🤖 Gemini phân tích:\n\n{gemini_answer}")
 
 async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -277,8 +312,12 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Dùng: /ask RSI 30 trên BTC 4h có phải oversold không?")
         return
     question = " ".join(context.args)
-    await update.message.reply_text("Đang hỏi Gemini...")
-    await update.message.reply_text(ask_gemini(question))
+    user_id = update.effective_user.id
+    history = get_recent_messages(user_id, limit=10)
+    answer = ask_gemini(question, history=history)
+    save_message(user_id, "user", question)
+    save_message(user_id, "assistant", answer)
+    await update.message.reply_text(answer)
 
 async def teach_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_owner(update, context):
@@ -332,55 +371,131 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🖼️ Đang phân tích ảnh với Gemini Vision...")
 
     answer = ask_gemini_with_vision(caption, base64_image, mime_type)
+    user_id = update.effective_user.id
+    save_message(user_id, "user", f"[Image] {caption}")
+    save_message(user_id, "assistant", answer)
     await update.message.reply_text(answer)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_owner(update, context):
         return
-    text = update.message.text.lower()
+    user_id = update.effective_user.id
+    user_text = update.message.text
+
+    # Lấy lịch sử hội thoại
+    history = get_recent_messages(user_id, limit=10)
 
     # Hỏi giá
+    text_lower = user_text.lower()
     for key, symbol in COIN_MAP.items():
-        if key in text and any(w in text for w in ["giá", "price", "bao nhiêu", "mấy đô", "mấy"]):
+        if key in text_lower and any(w in text_lower for w in ["giá", "price", "bao nhiêu", "mấy đô", "mấy"]):
             await update.message.reply_text(get_price(symbol))
+            save_message(user_id, "user", user_text)
             return
 
-    # Hỏi TA / quyết định
-    is_trade_question = any(w in text for w in ["long", "short", "đợi", "nên", "mua", "bán", "vào lệnh", "xu hướng"])
-    is_ta_question = any(w in text for w in ["ta", "phân tích", "rsi", "macd", "chart", "signal", "tín hiệu"])
-    
+    # Hỏi TA / quyết định giao dịch
+    is_trade_question = any(w in text_lower for w in ["long", "short", "đợi", "nên", "mua", "bán", "vào lệnh", "xu hướng"])
+    is_ta_question = any(w in text_lower for w in ["ta", "phân tích", "rsi", "macd", "chart", "signal", "tín hiệu"])
+
     if is_ta_question or is_trade_question:
-        coin_symbol = detect_coin_in_text(text)
+        coin_symbol = detect_coin_in_text(text_lower)
         if not coin_symbol:
             coin_symbol = "BTC"
             await update.message.reply_text(f"🔍 Không thấy tên coin, tôi sẽ phân tích BTC.")
-        
         await update.message.reply_text(f"⏳ Đang phân tích {coin_symbol} 1h...")
         endpoint = "histohour"
         df = get_ohlcv(coin_symbol, endpoint, limit=1000, cc_key=CC_API_KEY)
         if df is not None:
             ta_summary = analyze_ta(df)
             await update.message.reply_text(ta_summary["text"])
-            answer = ask_gemini(update.message.text, ta_summary["data_for_grok"])
-            await update.message.reply_text(f"🤖 Gemini:\n\n{answer}")
+            answer = ask_gemini(user_text, context_data=ta_summary["data_for_grok"], history=history)
         else:
-            answer = ask_gemini(update.message.text)
-            await update.message.reply_text(f"🤖 Gemini:\n\n{answer}")
+            answer = ask_gemini(user_text, history=history)
+        save_message(user_id, "user", user_text)
+        save_message(user_id, "assistant", answer)
+        await update.message.reply_text(f"🤖 Gemini:\n\n{answer}")
         return
 
-    # News
-    if any(w in text for w in ["news", "tin tức", "tin mới", "hot"]):
+    # Hỏi news
+    if any(w in text_lower for w in ["news", "tin tức", "tin mới", "hot"]):
         await update.message.reply_text(get_news())
+        save_message(user_id, "user", user_text)
         return
 
-    # Mặc định
+    # Mặc định: hỏi AI với bộ nhớ
     await update.message.reply_text("Đang xử lý...")
-    answer = ask_gemini(update.message.text)
+    answer = ask_gemini(user_text, history=history)
+    save_message(user_id, "user", user_text)
+    save_message(user_id, "assistant", answer)
     await update.message.reply_text(answer)
 
-# ── Main ─────────────────────────────────────────────────
+# Paper trade handlers
+async def paper_balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
+    balance_text = paper_balance()
+    await update.message.reply_text(balance_text)
 
+async def paper_buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("Dùng: /paper_buy <symbol> <số lượng>")
+        return
+    symbol = COIN_MAP.get(args[0].lower(), args[0].upper())
+    try:
+        quantity = float(args[1])
+    except:
+        await update.message.reply_text("Số lượng không hợp lệ")
+        return
+    price = get_current_price(symbol)
+    if price is None:
+        await update.message.reply_text("Không lấy được giá")
+        return
+    result = paper_buy(symbol, quantity, price)
+    await update.message.reply_text(result)
+
+async def paper_sell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("Dùng: /paper_sell <symbol> <số lượng>")
+        return
+    symbol = COIN_MAP.get(args[0].lower(), args[0].upper())
+    try:
+        quantity = float(args[1])
+    except:
+        await update.message.reply_text("Số lượng không hợp lệ")
+        return
+    price = get_current_price(symbol)
+    if price is None:
+        await update.message.reply_text("Không lấy được giá")
+        return
+    result = paper_sell(symbol, quantity, price)
+    await update.message.reply_text(result)
+
+async def paper_history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
+    history_text = paper_history()
+    await update.message.reply_text(history_text)
+
+async def clear_memory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
+    user_id = update.effective_user.id
+    clear_memory(user_id)
+    await update.message.reply_text("🗑️ Đã xóa bộ nhớ hội thoại.")
+
+# ----------------------------------------------------------------------
+# Main
 def main():
+    # Khởi tạo cơ sở dữ liệu
+    init_memory_db()
+    init_paper_db()
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("price", price_cmd))
@@ -389,8 +504,14 @@ def main():
     app.add_handler(CommandHandler("ask", ask_cmd))
     app.add_handler(CommandHandler("teach", teach_cmd))
     app.add_handler(CommandHandler("patterns", patterns_cmd))
+    app.add_handler(CommandHandler("paper_balance", paper_balance_cmd))
+    app.add_handler(CommandHandler("paper_buy", paper_buy_cmd))
+    app.add_handler(CommandHandler("paper_sell", paper_sell_cmd))
+    app.add_handler(CommandHandler("paper_history", paper_history_cmd))
+    app.add_handler(CommandHandler("clear_memory", clear_memory_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
     print("🚀 Crypto AI Bot v2 (Gemini 2.5 Flash) đang chạy...")
     app.run_polling()
 
