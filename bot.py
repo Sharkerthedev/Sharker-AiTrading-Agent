@@ -116,7 +116,7 @@ def ask_gemini(user_message: str, context_data: str = "") -> str:
                 "Content-Type": "application/json",
             },
             json={
-                "model": "gemini-2-0-flash",   # Có thể đổi thành gemini-2.5-flash-preview-05-20 nếu muốn
+                "model": "gemini-2.5-flash",   # Có thể đổi thành gemini-2.5-flash-preview-05-20 nếu muốn
                 "messages": messages,
                 "max_tokens": 600,
                 "temperature": 0.7,
