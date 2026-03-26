@@ -120,7 +120,7 @@ def ask_gemini(user_message: str, context_data: str = "") -> str:
             json={
                 "model": "gemini-2.5-flash",   # nếu lỗi đổi thành gemini-2.0-flash
                 "messages": messages,
-                "max_tokens": 600,
+                "max_tokens": 2000,
                 "temperature": 0.7,
             },
             timeout=30
@@ -166,7 +166,7 @@ def ask_gemini_with_vision(question: str, image_url: str) -> str:
             json={
                 "model": "gemini-2.5-flash",
                 "messages": messages,
-                "max_tokens": 600,
+                "max_tokens": 2000,
                 "temperature": 0.7,
             },
             timeout=30
