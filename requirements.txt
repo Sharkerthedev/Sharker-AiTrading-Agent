@@ -4,4 +4,6 @@ pandas==2.2.0
 ta
 chromadb
 sentence-transformers
+langchain
 langchain-text-splitters
+openai
