@@ -1,6 +1,7 @@
 import os
 import requests
 import datetime
+import base64
 import re
 from telegram import Update
 from telegram.ext import (
@@ -118,9 +119,9 @@ def ask_gemini(user_message: str, context_data: str = "") -> str:
                 "Content-Type": "application/json",
             },
             json={
-                "model": "gemini-2.5-flash",   # nếu lỗi đổi thành gemini-2.0-flash
+                "model": "gemini-2.5-flash",
                 "messages": messages,
-                "max_tokens": 2000,
+                "max_tokens": 2000,   # tăng để không bị cắt
                 "temperature": 0.7,
             },
             timeout=30
@@ -137,7 +138,8 @@ def ask_gemini(user_message: str, context_data: str = "") -> str:
     except Exception as e:
         return f"Lỗi Gemini API: {e}"
 
-def ask_gemini_with_vision(question: str, image_url: str) -> str:
+def ask_gemini_with_vision(question: str, image_base64: str, mime_type: str = "image/jpeg") -> str:
+    """Gửi ảnh dưới dạng base64 (data URL)."""
     try:
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         system_prompt = (
@@ -147,13 +149,15 @@ def ask_gemini_with_vision(question: str, image_url: str) -> str:
             "Phân tích hình ảnh được cung cấp và trả lời câu hỏi. "
             "Bạn có thể đưa ra nhận định về xu hướng nhưng không đưa ra lời khuyên tài chính trực tiếp."
         )
+        # Tạo data URL
+        data_url = f"data:{mime_type};base64,{image_base64}"
         messages = [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": question},
-                    {"type": "image_url", "image_url": {"url": image_url}}
+                    {"type": "image_url", "image_url": {"url": data_url}}
                 ]
             }
         ]
@@ -184,7 +188,6 @@ def ask_gemini_with_vision(question: str, image_url: str) -> str:
         return f"Lỗi Gemini Vision: {e}"
 
 def detect_coin_in_text(text: str) -> str:
-    """Phát hiện coin trong text, trả về symbol (BTC, ETH,...) hoặc None."""
     for key, symbol in COIN_MAP.items():
         if key in text:
             return symbol
@@ -295,14 +298,20 @@ async def patterns_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(patterns)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Lấy ảnh chất lượng cao nhất
     photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
-    file_url = file.file_path
+    # Tải ảnh về dưới dạng bytes
+    image_bytes = await file.download_as_bytearray()
+    # Chuyển thành base64
+    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    # Xác định MIME type (Telegram ảnh là JPEG)
+    mime_type = "image/jpeg"
 
     caption = update.message.caption or "Phân tích ảnh này"
     await update.message.reply_text("🖼️ Đang phân tích ảnh với Gemini Vision...")
 
-    answer = ask_gemini_with_vision(caption, file_url)
+    answer = ask_gemini_with_vision(caption, base64_image, mime_type)
     await update.message.reply_text(answer)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -319,26 +328,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_ta_question = any(w in text for w in ["ta", "phân tích", "rsi", "macd", "chart", "signal", "tín hiệu"])
     
     if is_ta_question or is_trade_question:
-        # Tìm coin trong câu
         coin_symbol = detect_coin_in_text(text)
         if not coin_symbol:
-            # Mặc định BTC nếu không tìm thấy
             coin_symbol = "BTC"
             await update.message.reply_text(f"🔍 Không thấy tên coin, tôi sẽ phân tích BTC.")
         
-        # Lấy dữ liệu TA
         await update.message.reply_text(f"⏳ Đang phân tích {coin_symbol} 1h...")
         endpoint = "histohour"
         df = get_ohlcv(coin_symbol, endpoint, limit=1000, cc_key=CC_API_KEY)
         if df is not None:
             ta_summary = analyze_ta(df)
-            # Gửi bảng TA
             await update.message.reply_text(ta_summary["text"])
-            # Hỏi AI với context TA
             answer = ask_gemini(update.message.text, ta_summary["data_for_grok"])
             await update.message.reply_text(f"🤖 Gemini:\n\n{answer}")
         else:
-            # Nếu không lấy được dữ liệu, vẫn hỏi AI nhưng không có context
             answer = ask_gemini(update.message.text)
             await update.message.reply_text(f"🤖 Gemini:\n\n{answer}")
         return
