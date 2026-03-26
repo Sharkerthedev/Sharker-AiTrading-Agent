@@ -14,6 +14,7 @@ from knowledge import save_pattern, get_patterns, list_patterns
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 CC_API_KEY = os.environ.get("CRYPTOCOMPARE_KEY")
+OWNER_ID = int(os.environ.get("OWNER_ID", 0))  # ID của bạn
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
@@ -32,6 +33,15 @@ TIMEFRAME_MAP = {
     "1h": "histohour", "4h": "histohour",
     "1d": "histoday", "1w": "histoday",
 }
+
+# ── Auth check ────────────────────────────────────────────
+async def check_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Trả về True nếu người dùng là chủ nhân, nếu không thì gửi cảnh báo và trả về False."""
+    user_id = update.effective_user.id
+    if user_id != OWNER_ID:
+        await update.message.reply_text("⛔ Bot này chỉ dành cho chủ nhân.")
+        return False
+    return True
 
 # ── Helpers ──────────────────────────────────────────────
 
@@ -121,7 +131,7 @@ def ask_gemini(user_message: str, context_data: str = "") -> str:
             json={
                 "model": "gemini-2.5-flash",
                 "messages": messages,
-                "max_tokens": 2000,   # tăng để không bị cắt
+                "max_tokens": 2000,
                 "temperature": 0.7,
             },
             timeout=30
@@ -139,7 +149,6 @@ def ask_gemini(user_message: str, context_data: str = "") -> str:
         return f"Lỗi Gemini API: {e}"
 
 def ask_gemini_with_vision(question: str, image_base64: str, mime_type: str = "image/jpeg") -> str:
-    """Gửi ảnh dưới dạng base64 (data URL)."""
     try:
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         system_prompt = (
@@ -149,7 +158,6 @@ def ask_gemini_with_vision(question: str, image_base64: str, mime_type: str = "i
             "Phân tích hình ảnh được cung cấp và trả lời câu hỏi. "
             "Bạn có thể đưa ra nhận định về xu hướng nhưng không đưa ra lời khuyên tài chính trực tiếp."
         )
-        # Tạo data URL
         data_url = f"data:{mime_type};base64,{image_base64}"
         messages = [
             {"role": "system", "content": system_prompt},
@@ -196,6 +204,8 @@ def detect_coin_in_text(text: str) -> str:
 # ── Handlers ─────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
     await update.message.reply_text(
         "👋 Xin chào! Tui là Crypto AI Bot v2 (Gemini).\n\n"
         "📊 Giá & Data:\n"
@@ -213,6 +223,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
     args = context.args
     if not args:
         await update.message.reply_text("Dùng: /price btc")
@@ -221,6 +233,8 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(get_price(symbol))
 
 async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
     args = context.args
     if not args:
         await update.message.reply_text("Dùng: /ta btc 1h  (timeframe: 1h, 4h, 1d)")
@@ -248,6 +262,8 @@ async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🤖 Gemini phân tích:\n\n{gemini_answer}")
 
 async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
     symbol = None
     if context.args:
         symbol = COIN_MAP.get(context.args[0].lower(), context.args[0].upper())
@@ -255,6 +271,8 @@ async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(get_news(symbol))
 
 async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
     if not context.args:
         await update.message.reply_text("Dùng: /ask RSI 30 trên BTC 4h có phải oversold không?")
         return
@@ -263,6 +281,8 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(ask_gemini(question))
 
 async def teach_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
     if not context.args:
         await update.message.reply_text(
             "Cú pháp: /teach [Tên pattern] | [Mô tả chi tiết]\n\n"
@@ -288,6 +308,8 @@ async def teach_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def patterns_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
     patterns = list_patterns()
     if not patterns:
         await update.message.reply_text(
@@ -298,14 +320,12 @@ async def patterns_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(patterns)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Lấy ảnh chất lượng cao nhất
+    if not await check_owner(update, context):
+        return
     photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
-    # Tải ảnh về dưới dạng bytes
     image_bytes = await file.download_as_bytearray()
-    # Chuyển thành base64
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
-    # Xác định MIME type (Telegram ảnh là JPEG)
     mime_type = "image/jpeg"
 
     caption = update.message.caption or "Phân tích ảnh này"
@@ -315,15 +335,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(answer)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_owner(update, context):
+        return
     text = update.message.text.lower()
 
-    # 1. Hỏi giá
+    # Hỏi giá
     for key, symbol in COIN_MAP.items():
         if key in text and any(w in text for w in ["giá", "price", "bao nhiêu", "mấy đô", "mấy"]):
             await update.message.reply_text(get_price(symbol))
             return
 
-    # 2. Hỏi TA / Quyết định long/short/đợi
+    # Hỏi TA / quyết định
     is_trade_question = any(w in text for w in ["long", "short", "đợi", "nên", "mua", "bán", "vào lệnh", "xu hướng"])
     is_ta_question = any(w in text for w in ["ta", "phân tích", "rsi", "macd", "chart", "signal", "tín hiệu"])
     
@@ -346,12 +368,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"🤖 Gemini:\n\n{answer}")
         return
 
-    # 3. Hỏi news
+    # News
     if any(w in text for w in ["news", "tin tức", "tin mới", "hot"]):
         await update.message.reply_text(get_news())
         return
 
-    # 4. Mặc định: hỏi AI
+    # Mặc định
     await update.message.reply_text("Đang xử lý...")
     answer = ask_gemini(update.message.text)
     await update.message.reply_text(answer)
