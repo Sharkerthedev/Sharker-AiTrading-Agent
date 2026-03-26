@@ -10,6 +10,7 @@ from telegram.ext import (
 )
 from ta_engine import analyze_ta, get_ohlcv
 from knowledge import save_pattern, get_patterns, list_patterns
+from rag_memory import RagMemory  # Import RAG memory
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -34,7 +35,10 @@ TIMEFRAME_MAP = {
     "1d": "histoday", "1w": "histoday",
 }
 
-# ──── Database cho bộ nhớ hội thoại ──────────────────────────
+# Khởi tạo RAG Memory
+rag = RagMemory()
+
+# ──── Database cho bộ nhớ hội thoại (short-term) ─────────────────
 DB_PATH = "chat_memory.db"
 
 def init_db():
@@ -65,9 +69,8 @@ def get_recent_messages(user_id, limit=10):
               (user_id, limit))
     rows = c.fetchall()
     conn.close()
-    return list(reversed(rows))   # từ cũ đến mới
+    return list(reversed(rows))
 
-# Khởi tạo DB khi module load
 init_db()
 
 # ──── Kiểm tra quyền chủ nhân ──────────────────────────────────
@@ -78,7 +81,7 @@ async def check_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
         return False
     return True
 
-# ──── Helper: lấy giá hiện tại (dùng chung) ─────────────────────
+# ──── Helper: lấy giá hiện tại ─────────────────────────────────
 def get_current_price(symbol: str) -> float:
     try:
         url = "https://min-api.cryptocompare.com/data/price"
@@ -136,8 +139,9 @@ def get_news(symbol: str = None) -> str:
     except Exception as e:
         return f"Lỗi lấy news: {e}"
 
-# ──── Gemini API (text + vision) ─────────────────────────────────
-def ask_gemini(user_message: str, context_data: str = "", history=None) -> str:
+# ──── Gemini API với RAG (bộ nhớ dài hạn) ────────────────────────
+def ask_gemini_with_rag(user_message: str, context_data: str = "", history=None) -> str:
+    """Gọi Gemini với context từ RAG (kiến thức dài hạn) và short-term history"""
     try:
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         patterns = get_patterns()
@@ -147,6 +151,15 @@ def ask_gemini(user_message: str, context_data: str = "", history=None) -> str:
                 f"- [{p['name']}]: {p['description']}" for p in patterns
             )
 
+        # Tìm kiếm kiến thức liên quan từ RAG (bộ nhớ dài hạn)
+        rag_context = ""
+        try:
+            relevant_knowledge = rag.search_knowledge(user_message, n_results=3)
+            if relevant_knowledge:
+                rag_context = "\n\n**📚 Kiến thức đã học trước đây:**\n" + "\n".join(relevant_knowledge)
+        except Exception as e:
+            print(f"Lỗi RAG search: {e}")
+
         system_prompt = (
             "Bạn là AI assistant chuyên về crypto trading và phân tích kỹ thuật (TA). "
             f"Hôm nay là {current_time}. "
@@ -154,6 +167,7 @@ def ask_gemini(user_message: str, context_data: str = "", history=None) -> str:
             "Phân tích dựa trên RSI, MACD, Bollinger Bands, EMA, support/resistance, volume. "
             "Bạn có thể đưa ra nhận định về xu hướng (tăng/giảm/đi ngang) và các kịch bản, nhưng không đưa ra lời khuyên tài chính trực tiếp (không nói 'nên mua' hay 'nên bán')."
             + pattern_text
+            + rag_context
         )
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -254,7 +268,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_owner(update, context):
         return
     await update.message.reply_text(
-        "👋 Xin chào! Tui là Crypto AI Bot v2 (Gemini).\n\n"
+        "👋 Xin chào! Tui là Crypto AI Bot v2 (Gemini + RAG).\n\n"
         "📊 Giá & Data:\n"
         "/price btc — Xem giá\n"
         "/ta btc 1h — Phân tích TA (1h/4h/1d)\n"
@@ -263,7 +277,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 AI & Học:\n"
         "/ask [câu hỏi] — Hỏi AI crypto/TA\n"
         "/teach [tên] | [mô tả] — Dạy bot pattern mới\n"
-        "/patterns — Xem pattern đã dạy\n\n"
+        "/patterns — Xem pattern đã dạy\n"
+        "/memory — Xem kiến thức bot đã học (RAG)\n\n"
         "🖼️ Gửi ảnh (có hoặc không caption) để phân tích!\n\n"
         "Chat tự nhiên tiếng Việt cũng được!\n"
         "Ví dụ: 'btc hôm nay nên long hay short?'"
@@ -304,16 +319,22 @@ async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     history = get_recent_messages(user_id, limit=10)
 
-    gemini_answer = ask_gemini(
+    gemini_answer = ask_gemini_with_rag(
         f"Phân tích kỹ thuật {symbol} timeframe {tf}. "
         "Xu hướng hiện tại? Vùng support/resistance quan trọng? Nên chờ gì?",
         context_data=ta_summary["data_for_grok"],
         history=history
     )
 
-    # Lưu vào bộ nhớ
+    # Lưu vào bộ nhớ ngắn hạn
     save_message(user_id, "user", f"/ta {symbol} {tf}")
     save_message(user_id, "assistant", gemini_answer)
+    
+    # Lưu phân tích vào RAG (bộ nhớ dài hạn)
+    try:
+        rag.save_analysis(symbol, gemini_answer, ta_summary)
+    except Exception as e:
+        print(f"Lỗi lưu RAG: {e}")
 
     await update.message.reply_text(f"🤖 Gemini phân tích:\n\n{gemini_answer}")
 
@@ -335,7 +356,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question = " ".join(context.args)
     user_id = update.effective_user.id
     history = get_recent_messages(user_id, limit=10)
-    answer = ask_gemini(question, history=history)
+    answer = ask_gemini_with_rag(question, history=history)
     save_message(user_id, "user", f"/ask {question}")
     save_message(user_id, "assistant", answer)
     await update.message.reply_text(answer)
@@ -360,6 +381,16 @@ async def teach_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     description = parts[1].strip()
 
     save_pattern(name, description)
+    
+    # Lưu pattern vào RAG (bộ nhớ dài hạn)
+    try:
+        rag.add_knowledge(
+            content=f"Pattern: {name} - {description}",
+            metadata={"type": "pattern", "name": name}
+        )
+    except Exception as e:
+        print(f"Lỗi lưu pattern vào RAG: {e}")
+    
     await update.message.reply_text(
         f"✅ Đã lưu pattern: *{name}*\n\n"
         f"Mô tả: {description}\n\n"
@@ -378,6 +409,24 @@ async def patterns_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     await update.message.reply_text(patterns)
+
+async def memory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xem những kiến thức bot đã học (RAG)"""
+    if not await check_owner(update, context):
+        return
+    try:
+        # Lấy 10 kiến thức gần nhất từ RAG
+        results = rag.collection.get(limit=10)
+        if results['documents'] and results['documents'][0]:
+            msg = "📚 **Kiến thức bot đã học (RAG):**\n\n"
+            for i, doc in enumerate(results['documents'][:10], 1):
+                if doc and len(doc) > 0:
+                    msg += f"{i}. {doc[:200]}...\n\n"
+            await update.message.reply_text(msg, parse_mode="Markdown")
+        else:
+            await update.message.reply_text("Chưa có kiến thức nào được lưu trong RAG.")
+    except Exception as e:
+        await update.message.reply_text(f"Lỗi truy xuất RAG: {e}")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_owner(update, context):
@@ -403,8 +452,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
 
-    # Lưu tin nhắn user ngay lập tức (sẽ lưu sau khi xử lý xong, nhưng có thể lưu trước để đưa vào history?)
-    # Thực tế: nên lưu sau khi có phản hồi, nhưng ở đây tạm lưu trước khi xử lý để tiện.
     save_message(user_id, "user", user_text)
 
     text_lower = user_text.lower()
@@ -434,9 +481,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ta_summary = analyze_ta(df)
             await update.message.reply_text(ta_summary["text"])
             history = get_recent_messages(user_id, limit=10)
-            answer = ask_gemini(user_text, context_data=ta_summary["data_for_grok"], history=history)
+            answer = ask_gemini_with_rag(user_text, context_data=ta_summary["data_for_grok"], history=history)
+            # Lưu phân tích vào RAG
+            try:
+                rag.save_analysis(coin_symbol, answer, ta_summary)
+            except Exception as e:
+                print(f"Lỗi lưu RAG: {e}")
         else:
-            answer = ask_gemini(user_text, history=get_recent_messages(user_id, limit=10))
+            answer = ask_gemini_with_rag(user_text, history=get_recent_messages(user_id, limit=10))
         
         await update.message.reply_text(f"🤖 Gemini:\n\n{answer}")
         save_message(user_id, "assistant", answer)
@@ -449,10 +501,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_message(user_id, "assistant", reply)
         return
 
-    # 4. Mặc định: hỏi AI
+    # 4. Mặc định: hỏi AI với RAG
     await update.message.reply_text("Đang xử lý...")
     history = get_recent_messages(user_id, limit=10)
-    answer = ask_gemini(user_text, history=history)
+    answer = ask_gemini_with_rag(user_text, history=history)
     await update.message.reply_text(answer)
     save_message(user_id, "assistant", answer)
 
@@ -466,9 +518,10 @@ def main():
     app.add_handler(CommandHandler("ask", ask_cmd))
     app.add_handler(CommandHandler("teach", teach_cmd))
     app.add_handler(CommandHandler("patterns", patterns_cmd))
+    app.add_handler(CommandHandler("memory", memory_cmd))  # Lệnh xem RAG
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🚀 Crypto AI Bot v2 (Gemini 2.5 Flash) đang chạy...")
+    print("🚀 Crypto AI Bot v2 (Gemini + RAG) đang chạy...")
     app.run_polling()
 
 if __name__ == "__main__":
