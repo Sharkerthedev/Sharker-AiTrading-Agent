@@ -1,104 +1,153 @@
 import os
 import requests
 import base64
+import io
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, MessageHandler,
     CommandHandler, filters, ContextTypes
 )
-# Giữ nguyên các import cũ của sếp
-from ta_engine import analyze_ta, get_ohlcv
-from knowledge import save_pattern, get_patterns, list_patterns
 
+# Giữ nguyên các file phụ của sếp
+try:
+    from ta_engine import analyze_ta, get_ohlcv
+    from knowledge import save_pattern, get_patterns, list_patterns
+except ImportError:
+    # Tránh lỗi nếu sếp chưa có file phụ, bot vẫn chạy được chat thường
+    print("⚠️ Cảnh báo: Thiếu file ta_engine.py hoặc knowledge.py")
+
+# Lấy Key từ Environment Variables trên Railway
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROK_API_KEY = os.environ.get("GROK_API_KEY")
 CC_API_KEY = os.environ.get("CRYPTOCOMPARE_KEY")
 GROK_URL = "https://api.x.ai/v1/chat/completions"
 
-# ── Helpers Nâng Cấp ──────────────────────────────────────
+COIN_MAP = {
+    "btc": "BTC", "bitcoin": "BTC",
+    "eth": "ETH", "ethereum": "ETH",
+    "sol": "SOL", "solana": "SOL",
+    "bnb": "BNB", "xrp": "XRP",
+}
+
+# ── Helpers ──────────────────────────────────────────────
 
 def ask_grok(user_message: str, context_data: str = "", base64_image: str = None) -> str:
     try:
-        patterns = get_patterns()
+        # Lấy kiến thức đã dạy (nếu có file knowledge)
         pattern_text = ""
-        if patterns:
-            pattern_text = "\n\nKiến thức TA bổ sung:\n" + "\n".join(
-                f"- [{p['name']}]: {p['description']}" for p in patterns
-            )
+        try:
+            patterns = get_patterns()
+            if patterns:
+                pattern_text = "\n\nKiến thức TA bổ sung:\n" + "\n".join(
+                    f"- [{p['name']}]: {p['description']}" for p in patterns
+                )
+        except: pass
 
         system_prompt = (
-            "Bạn là AI assistant chuyên về crypto trading và soi chart. "
-            "Trả lời bằng tiếng Việt, ngắn gọn. Nếu có ảnh, hãy phân tích nến và các chỉ báo trong ảnh. "
-            "Hôm nay là 26/03/2026." + pattern_text
+            "Bạn là AI assistant chuyên về crypto trading. "
+            "Trả lời bằng tiếng Việt, ngắn gọn, thực tế. "
+            "Nếu có ảnh chart, hãy soi nến và các chỉ báo kỹ thuật để đưa ra nhận định."
+            + pattern_text
         )
 
-        # CẤU TRÚC VISION: Phải dùng List cho Content
+        # CẤU TRÚC MESSAGE CHO VISION (BẮT BUỘC DẠNG LIST)
         content_list = []
         
         # 1. Nếu có ảnh, nhét vào đầu tiên
         if base64_image:
             content_list.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{base64_image}",
+                    "detail": "high"
+                }
             })
 
-        # 2. Thêm chữ (Yêu cầu hoặc context dữ liệu)
-        text_payload = f"Tin nhắn: {user_message}"
+        # 2. Thêm nội dung chữ
+        text_payload = f"Yêu cầu: {user_message}"
         if context_data:
-            text_payload += f"\n\nDữ liệu thị trường đi kèm:\n{context_data}"
+            text_payload += f"\n\nDữ liệu kỹ thuật đi kèm:\n{context_data}"
         
         content_list.append({"type": "text", "text": text_payload})
 
+        # Gửi request sang xAI
         r = requests.post(GROK_URL, headers={
             "Authorization": f"Bearer {GROK_API_KEY}",
             "Content-Type": "application/json",
         }, json={
-            "model": "grok-4.1-fast-non-reasoning", # Dùng bản non-reasoning như sếp chốt
+            "model": "grok-4.1-fast-non-reasoning", # Bản sếp có $5 và nhìn được ảnh
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content_list}
             ],
-            "max_tokens": 800
+            "temperature": 0.5
         }, timeout=60)
         
-        return r.json()["choices"][0]["message"]["content"]
+        res_json = r.json()
+        if "choices" in res_json:
+            return res_json["choices"][0]["message"]["content"]
+        else:
+            return f"❌ Lỗi API xAI: {res_json.get('error', {}).get('message', 'Dữ liệu không xác định')}"
+            
     except Exception as e:
-        return f"Lỗi Grok Vision API: {e}"
+        return f"❌ Lỗi xử lý Grok: {str(e)}"
 
-# ── Handlers Mới ──────────────────────────────────────────
+# ── Handlers ─────────────────────────────────────────────
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 Chào sếp! Gửi ảnh chart hoặc nhắn tin để em soi kèo cho nhé!")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý khi sếp gửi ảnh kèm caption"""
+    """Xử lý khi sếp gửi ảnh"""
     msg = update.message
-    photo_file = await msg.photo[-1].get_file() # Lấy ảnh nét nhất
-    
-    # Tải ảnh về và encode Base64
-    image_bytearray = await photo_file.download_as_bytearray()
-    base64_image = base64.b64encode(image_bytearray).decode('utf-8')
-    
-    caption = msg.caption if msg.caption else "Soi chart này giúp sếp."
-    
-    await msg.reply_text("⏳ Grok đang soi nến, sếp đợi tí...")
-    answer = ask_grok(caption, base64_image=base64_image)
-    await msg.reply_text(answer)
+    await msg.reply_text("⏳ Đang tải ảnh và soi nến, sếp chờ em tí...")
 
-# ── Main Nâng Cấp ─────────────────────────────────────────
+    try:
+        # Lấy ảnh chất lượng cao nhất
+        photo_file = await msg.photo[-1].get_file()
+        
+        # Tải về bytearray
+        img_buffer = await photo_file.download_as_bytearray()
+        
+        # Chuyển sang Base64
+        base64_image = base64.b64encode(img_buffer).decode('utf-8')
+        
+        # Lấy caption của sếp (ví dụ: 'soi con này khung h1')
+        caption = msg.caption if msg.caption else "Hãy phân tích hình ảnh chart này."
+        
+        # Gọi Grok
+        answer = ask_grok(caption, base64_image=base64_image)
+        await msg.reply_text(answer)
+
+    except Exception as e:
+        await msg.reply_text(f"❌ Lỗi tải ảnh: {str(e)}")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xử lý tin nhắn văn bản bình thường"""
+    text = update.message.text
+    await update.message.reply_text("🤖 Đang suy nghĩ...")
+    answer = ask_grok(text)
+    await update.message.reply_text(answer)
+
+# ── Main ─────────────────────────────────────────────────
 
 def main():
+    if not TELEGRAM_TOKEN:
+        print("❌ Thiếu TELEGRAM_TOKEN trong Variables!")
+        return
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
-    # Commands cũ
+    # Lệnh cơ bản
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("price", price_cmd))
-    app.add_handler(CommandHandler("ta", ta_cmd))
     
-    # Handler cho Ảnh (Mới thêm)
+    # XỬ LÝ ẢNH (Phải có dòng này mới không bị 'im')
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
-    # Handler cho Chữ (Cập nhật để tránh nhận nhầm lệnh)
+    # XỬ LÝ CHỮ
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 Bot Grok 4.1 Vision (Python) đang chạy...")
+    print("🚀 Bot Grok 4.1 Vision đã sẵn sàng trên Railway!")
     app.run_polling()
 
 if __name__ == "__main__":
