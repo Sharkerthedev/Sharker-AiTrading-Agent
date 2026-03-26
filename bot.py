@@ -1,5 +1,6 @@
 import os
 import requests
+import datetime
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, MessageHandler,
@@ -9,10 +10,9 @@ from ta_engine import analyze_ta, get_ohlcv
 from knowledge import save_pattern, get_patterns, list_patterns
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")   # thay vì GROK_API_KEY
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 CC_API_KEY = os.environ.get("CRYPTOCOMPARE_KEY")
 
-# Gemini OpenAI-compatible endpoint
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
 COIN_MAP = {
@@ -83,8 +83,8 @@ def get_news(symbol: str = None) -> str:
         return f"Lỗi lấy news: {e}"
 
 def ask_gemini(user_message: str, context_data: str = "") -> str:
-    """Gọi Gemini API với OpenAI-compatible endpoint."""
     try:
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         patterns = get_patterns()
         pattern_text = ""
         if patterns:
@@ -94,6 +94,7 @@ def ask_gemini(user_message: str, context_data: str = "") -> str:
 
         system_prompt = (
             "Bạn là AI assistant chuyên về crypto trading và phân tích kỹ thuật (TA). "
+            f"Hôm nay là {current_time}. "
             "Trả lời bằng tiếng Việt, ngắn gọn, thực tế, như một trader kinh nghiệm. "
             "Phân tích dựa trên RSI, MACD, Bollinger Bands, EMA, support/resistance, volume. "
             "Không đưa ra lời khuyên tài chính trực tiếp. Chỉ phân tích kỹ thuật."
@@ -109,28 +110,44 @@ def ask_gemini(user_message: str, context_data: str = "") -> str:
 
         messages.append({"role": "user", "content": user_message})
 
-        r = requests.post(
+        response = requests.post(
             GEMINI_URL,
             headers={
                 "Authorization": f"Bearer {GEMINI_API_KEY}",
                 "Content-Type": "application/json",
             },
             json={
-                "model": "gemini-2.5-flash",   # Có thể đổi thành gemini-2.5-flash-preview-05-20 nếu muốn
+                "model": "gemini-2.5-flash",   # thử model mới, nếu lỗi thì đổi thành gemini-2.0-flash
                 "messages": messages,
                 "max_tokens": 600,
                 "temperature": 0.7,
             },
             timeout=30
         )
-        return r.json()["choices"][0]["message"]["content"]
+
+        if response.status_code != 200:
+            return f"Lỗi Gemini API: {response.status_code} - {response.text}"
+
+        data = response.json()
+        if "choices" not in data:
+            return f"Lỗi cấu trúc phản hồi: {data}"
+
+        return data["choices"][0]["message"]["content"]
     except Exception as e:
         return f"Lỗi Gemini API: {e}"
 
 def ask_gemini_with_vision(question: str, image_url: str) -> str:
-    """Gọi Gemini Vision qua OpenAI-compatible endpoint."""
     try:
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        system_prompt = (
+            "Bạn là AI assistant chuyên về crypto trading và phân tích kỹ thuật (TA). "
+            f"Hôm nay là {current_time}. "
+            "Trả lời bằng tiếng Việt, ngắn gọn, thực tế, như một trader kinh nghiệm. "
+            "Phân tích hình ảnh được cung cấp và trả lời câu hỏi. "
+            "Không đưa ra lời khuyên tài chính trực tiếp. Chỉ phân tích kỹ thuật."
+        )
         messages = [
+            {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": [
@@ -139,21 +156,29 @@ def ask_gemini_with_vision(question: str, image_url: str) -> str:
                 ]
             }
         ]
-        r = requests.post(
+        response = requests.post(
             GEMINI_URL,
             headers={
                 "Authorization": f"Bearer {GEMINI_API_KEY}",
                 "Content-Type": "application/json",
             },
             json={
-                "model": "gemini-2.0-flash",   # vision cũng dùng model này
+                "model": "gemini-2.5-flash",   # có thể đổi nếu cần
                 "messages": messages,
                 "max_tokens": 600,
                 "temperature": 0.7,
             },
             timeout=30
         )
-        return r.json()["choices"][0]["message"]["content"]
+
+        if response.status_code != 200:
+            return f"Lỗi Gemini Vision: {response.status_code} - {response.text}"
+
+        data = response.json()
+        if "choices" not in data:
+            return f"Lỗi cấu trúc phản hồi: {data}"
+
+        return data["choices"][0]["message"]["content"]
     except Exception as e:
         return f"Lỗi Gemini Vision: {e}"
 
@@ -184,10 +209,6 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(get_price(symbol))
 
 async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /ta btc 1h
-    Lấy OHLCV → tính TA indicators → Gemini phân tích
-    """
     args = context.args
     if not args:
         await update.message.reply_text("Dùng: /ta btc 1h  (timeframe: 1h, 4h, 1d)")
@@ -195,12 +216,12 @@ async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     symbol = COIN_MAP.get(args[0].lower(), args[0].upper())
     tf = args[1].lower() if len(args) > 1 else "1h"
-    limit = 4 if tf == "4h" else 1
 
     await update.message.reply_text(f"⏳ Đang phân tích {symbol} {tf}...")
 
     endpoint = TIMEFRAME_MAP.get(tf, "histohour")
-    df = get_ohlcv(symbol, endpoint, limit=200, cc_key=CC_API_KEY)
+    # Tăng limit để đủ dữ liệu cho EMA800 (cần ít nhất 800 điểm)
+    df = get_ohlcv(symbol, endpoint, limit=1000, cc_key=CC_API_KEY)
     if df is None:
         await update.message.reply_text("Không lấy được dữ liệu OHLCV.")
         return
@@ -231,10 +252,6 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(ask_gemini(question))
 
 async def teach_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /teach Bullish Engulfing | Nến đảo chiều tăng, thân nến xanh lớn bao trùm nến đỏ trước đó,
-    xuất hiện ở vùng support thì xác suất cao
-    """
     if not context.args:
         await update.message.reply_text(
             "Cú pháp: /teach [Tên pattern] | [Mô tả chi tiết]\n\n"
@@ -270,10 +287,9 @@ async def patterns_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(patterns)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý tin nhắn có ảnh."""
-    photo = update.message.photo[-1]  # lấy ảnh chất lượng cao nhất
+    photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
-    file_url = file.file_path  # URL tạm thời của ảnh trên Telegram
+    file_url = file.file_path
 
     caption = update.message.caption or "Phân tích ảnh này"
     await update.message.reply_text("🖼️ Đang phân tích ảnh với Gemini Vision...")
@@ -284,32 +300,30 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
 
-    # Nhận diện hỏi giá
     for key, symbol in COIN_MAP.items():
         if key in text and any(w in text for w in ["giá", "price", "bao nhiêu", "mấy đô", "mấy"]):
             await update.message.reply_text(get_price(symbol))
             return
 
-    # Nhận diện hỏi TA
     if any(w in text for w in ["ta", "phân tích", "rsi", "macd", "chart", "signal", "tín hiệu"]):
         for key, symbol in COIN_MAP.items():
             if key in text:
                 await update.message.reply_text(f"⏳ Đang phân tích {symbol} 1h...")
                 endpoint = "histohour"
-                df = get_ohlcv(symbol, endpoint, limit=200, cc_key=CC_API_KEY)
-                if df:
+                df = get_ohlcv(symbol, endpoint, limit=1000, cc_key=CC_API_KEY)
+                if df is not None:
                     ta_summary = analyze_ta(df)
                     await update.message.reply_text(ta_summary["text"])
                     answer = ask_gemini(update.message.text, ta_summary["data_for_grok"])
                     await update.message.reply_text(f"🤖 Gemini:\n\n{answer}")
-                    return
+                else:
+                    await update.message.reply_text("Không thể lấy dữ liệu OHLCV.")
+                return
 
-    # Nhận diện news
     if any(w in text for w in ["news", "tin tức", "tin mới", "hot"]):
         await update.message.reply_text(get_news())
         return
 
-    # Mặc định: hỏi Gemini
     await update.message.reply_text("Đang xử lý...")
     answer = ask_gemini(update.message.text)
     await update.message.reply_text(answer)
@@ -325,9 +339,9 @@ def main():
     app.add_handler(CommandHandler("ask", ask_cmd))
     app.add_handler(CommandHandler("teach", teach_cmd))
     app.add_handler(CommandHandler("patterns", patterns_cmd))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))   # thêm handler ảnh
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🚀 Crypto AI Bot v2 (Gemini) đang chạy...")
+    print("🚀 Crypto AI Bot v2 (Gemini 2.5 Flash) đang chạy...")
     app.run_polling()
 
 if __name__ == "__main__":
