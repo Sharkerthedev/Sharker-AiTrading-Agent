@@ -9,10 +9,11 @@ from ta_engine import analyze_ta, get_ohlcv
 from knowledge import save_pattern, get_patterns, list_patterns
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GROK_API_KEY = os.environ.get("GROK_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")   # thay vì GROK_API_KEY
 CC_API_KEY = os.environ.get("CRYPTOCOMPARE_KEY")
 
-GROK_URL = "https://api.x.ai/v1/chat/completions"
+# Gemini OpenAI-compatible endpoint
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
 COIN_MAP = {
     "btc": "BTC", "bitcoin": "BTC",
@@ -29,7 +30,6 @@ TIMEFRAME_MAP = {
     "1h": "histohour", "4h": "histohour",
     "1d": "histoday", "1w": "histoday",
 }
-
 
 # ── Helpers ──────────────────────────────────────────────
 
@@ -58,7 +58,6 @@ def get_price(symbol: str) -> str:
     except Exception as e:
         return f"Lỗi lấy giá {symbol}: {e}"
 
-
 def get_news(symbol: str = None) -> str:
     try:
         url = "https://min-api.cryptocompare.com/data/v2/news/"
@@ -83,8 +82,8 @@ def get_news(symbol: str = None) -> str:
     except Exception as e:
         return f"Lỗi lấy news: {e}"
 
-
-def ask_grok(user_message: str, context_data: str = "") -> str:
+def ask_gemini(user_message: str, context_data: str = "") -> str:
+    """Gọi Gemini API với OpenAI-compatible endpoint."""
     try:
         patterns = get_patterns()
         pattern_text = ""
@@ -110,25 +109,59 @@ def ask_grok(user_message: str, context_data: str = "") -> str:
 
         messages.append({"role": "user", "content": user_message})
 
-        r = requests.post(GROK_URL, headers={
-            "Authorization": f"Bearer {GROK_API_KEY}",
-            "Content-Type": "application/json",
-        }, json={
-            "model": "grok-4-1-fast-non-reasoning",
-            "messages": messages,
-            "max_tokens": 600,
-            "temperature": 0.7,
-        }, timeout=30)
+        r = requests.post(
+            GEMINI_URL,
+            headers={
+                "Authorization": f"Bearer {GEMINI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gemini-2.0-flash",   # Có thể đổi thành gemini-2.5-flash-preview-05-20 nếu muốn
+                "messages": messages,
+                "max_tokens": 600,
+                "temperature": 0.7,
+            },
+            timeout=30
+        )
         return r.json()["choices"][0]["message"]["content"]
     except Exception as e:
-        return f"Lỗi Grok API: {e}"
+        return f"Lỗi Gemini API: {e}"
 
+def ask_gemini_with_vision(question: str, image_url: str) -> str:
+    """Gọi Gemini Vision qua OpenAI-compatible endpoint."""
+    try:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {"type": "image_url", "image_url": {"url": image_url}}
+                ]
+            }
+        ]
+        r = requests.post(
+            GEMINI_URL,
+            headers={
+                "Authorization": f"Bearer {GEMINI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gemini-2.0-flash",   # vision cũng dùng model này
+                "messages": messages,
+                "max_tokens": 600,
+                "temperature": 0.7,
+            },
+            timeout=30
+        )
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"Lỗi Gemini Vision: {e}"
 
 # ── Handlers ─────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Xin chào! Tui là Crypto AI Bot v2.\n\n"
+        "👋 Xin chào! Tui là Crypto AI Bot v2 (Gemini).\n\n"
         "📊 Giá & Data:\n"
         "/price btc — Xem giá\n"
         "/ta btc 1h — Phân tích TA (1h/4h/1d)\n"
@@ -138,9 +171,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/ask [câu hỏi] — Hỏi AI crypto/TA\n"
         "/teach [tên] | [mô tả] — Dạy bot pattern mới\n"
         "/patterns — Xem pattern đã dạy\n\n"
+        "🖼️ Gửi ảnh (có hoặc không caption) để phân tích!\n\n"
         "Chat tự nhiên tiếng Việt cũng được!"
     )
-
 
 async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
@@ -150,11 +183,10 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = COIN_MAP.get(args[0].lower(), args[0].upper())
     await update.message.reply_text(get_price(symbol))
 
-
 async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /ta btc 1h
-    Lấy OHLCV → tính TA indicators → Grok phân tích
+    Lấy OHLCV → tính TA indicators → Gemini phân tích
     """
     args = context.args
     if not args:
@@ -167,7 +199,6 @@ async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"⏳ Đang phân tích {symbol} {tf}...")
 
-    # Lấy OHLCV và tính TA
     endpoint = TIMEFRAME_MAP.get(tf, "histohour")
     df = get_ohlcv(symbol, endpoint, limit=200, cc_key=CC_API_KEY)
     if df is None:
@@ -175,17 +206,14 @@ async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     ta_summary = analyze_ta(df)
-    # Gửi bảng TA indicators
     await update.message.reply_text(ta_summary["text"])
 
-    # Hỏi Grok phân tích dựa trên data
-    grok_answer = ask_grok(
+    gemini_answer = ask_gemini(
         f"Phân tích kỹ thuật {symbol} timeframe {tf}. "
         "Xu hướng hiện tại? Vùng support/resistance quan trọng? Nên chờ gì?",
         context_data=ta_summary["data_for_grok"]
     )
-    await update.message.reply_text(f"🤖 Grok phân tích:\n\n{grok_answer}")
-
+    await update.message.reply_text(f"🤖 Gemini phân tích:\n\n{gemini_answer}")
 
 async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = None
@@ -194,15 +222,13 @@ async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Đang lấy tin tức...")
     await update.message.reply_text(get_news(symbol))
 
-
 async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Dùng: /ask RSI 30 trên BTC 4h có phải oversold không?")
         return
     question = " ".join(context.args)
-    await update.message.reply_text("Đang hỏi Grok...")
-    await update.message.reply_text(ask_grok(question))
-
+    await update.message.reply_text("Đang hỏi Gemini...")
+    await update.message.reply_text(ask_gemini(question))
 
 async def teach_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -233,7 +259,6 @@ async def teach_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-
 async def patterns_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     patterns = list_patterns()
     if not patterns:
@@ -244,6 +269,17 @@ async def patterns_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(patterns)
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xử lý tin nhắn có ảnh."""
+    photo = update.message.photo[-1]  # lấy ảnh chất lượng cao nhất
+    file = await context.bot.get_file(photo.file_id)
+    file_url = file.file_path  # URL tạm thời của ảnh trên Telegram
+
+    caption = update.message.caption or "Phân tích ảnh này"
+    await update.message.reply_text("🖼️ Đang phân tích ảnh với Gemini Vision...")
+
+    answer = ask_gemini_with_vision(caption, file_url)
+    await update.message.reply_text(answer)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
@@ -264,8 +300,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if df:
                     ta_summary = analyze_ta(df)
                     await update.message.reply_text(ta_summary["text"])
-                    answer = ask_grok(update.message.text, ta_summary["data_for_grok"])
-                    await update.message.reply_text(f"🤖 Grok:\n\n{answer}")
+                    answer = ask_gemini(update.message.text, ta_summary["data_for_grok"])
+                    await update.message.reply_text(f"🤖 Gemini:\n\n{answer}")
                     return
 
     # Nhận diện news
@@ -273,11 +309,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(get_news())
         return
 
-    # Mặc định: hỏi Grok
+    # Mặc định: hỏi Gemini
     await update.message.reply_text("Đang xử lý...")
-    answer = ask_grok(update.message.text)
+    answer = ask_gemini(update.message.text)
     await update.message.reply_text(answer)
-
 
 # ── Main ─────────────────────────────────────────────────
 
@@ -290,10 +325,10 @@ def main():
     app.add_handler(CommandHandler("ask", ask_cmd))
     app.add_handler(CommandHandler("teach", teach_cmd))
     app.add_handler(CommandHandler("patterns", patterns_cmd))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))   # thêm handler ảnh
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🚀 Crypto AI Bot v2 đang chạy...")
+    print("🚀 Crypto AI Bot v2 (Gemini) đang chạy...")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
