@@ -3,6 +3,7 @@ import requests
 import datetime
 import base64
 import sqlite3
+from openai import OpenAI  # <-- thêm để dùng Ollama
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, MessageHandler,
@@ -10,14 +11,32 @@ from telegram.ext import (
 )
 from ta_engine import analyze_ta, get_ohlcv
 from knowledge import save_pattern, get_patterns, list_patterns
-from rag_memory import RagMemory  # Import RAG memory
+from rag_memory import RagMemory
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY")          # key từ ollama.com
 CC_API_KEY = os.environ.get("CRYPTOCOMPARE_KEY")
-OWNER_ID = int(os.environ.get("OWNER_ID", 0))  # ID Telegram của bạn
 
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+# Danh sách user được phép (cách nhau bằng dấu phẩy)
+ALLOWED_USERS_STR = os.environ.get("ALLOWED_USERS", "")
+ALLOWED_USERS = set()
+if ALLOWED_USERS_STR:
+    for uid in ALLOWED_USERS_STR.split(','):
+        try:
+            ALLOWED_USERS.add(int(uid.strip()))
+        except ValueError:
+            pass
+
+# Giữ lại OWNER_ID cho tương thích (nếu có)
+OWNER_ID = int(os.environ.get("OWNER_ID", 0))
+if OWNER_ID:
+    ALLOWED_USERS.add(OWNER_ID)
+
+# Cấu hình client Ollama (OpenAI‑compatible)
+ollama_client = OpenAI(
+    api_key=OLLAMA_API_KEY,
+    base_url="https://ollama.com/v1"          # endpoint Ollama Cloud
+)
 
 COIN_MAP = {
     "btc": "BTC", "bitcoin": "BTC",
@@ -73,11 +92,11 @@ def get_recent_messages(user_id, limit=10):
 
 init_db()
 
-# ──── Kiểm tra quyền chủ nhân ──────────────────────────────────
-async def check_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+# ──── Kiểm tra quyền ─────────────────────────────────────────────
+async def check_permission(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user_id = update.effective_user.id
-    if user_id != OWNER_ID:
-        await update.message.reply_text("⛔ Bot này chỉ dành cho chủ nhân.")
+    if user_id not in ALLOWED_USERS:
+        await update.message.reply_text("⛔ Bạn không được phép sử dụng bot này.")
         return False
     return True
 
@@ -139,9 +158,9 @@ def get_news(symbol: str = None) -> str:
     except Exception as e:
         return f"Lỗi lấy news: {e}"
 
-# ──── Gemini API với RAG (bộ nhớ dài hạn) ────────────────────────
-def ask_gemini_with_rag(user_message: str, context_data: str = "", history=None) -> str:
-    """Gọi Gemini với context từ RAG (kiến thức dài hạn) và short-term history"""
+# ──── Ollama API với RAG (bộ nhớ dài hạn) ────────────────────────
+def ask_ollama_with_rag(user_message: str, context_data: str = "", history=None) -> str:
+    """Gọi Ollama Cloud với context từ RAG và short-term history"""
     try:
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         patterns = get_patterns()
@@ -151,7 +170,7 @@ def ask_gemini_with_rag(user_message: str, context_data: str = "", history=None)
                 f"- [{p['name']}]: {p['description']}" for p in patterns
             )
 
-        # Tìm kiếm kiến thức liên quan từ RAG (bộ nhớ dài hạn)
+        # Tìm kiếm kiến thức liên quan từ RAG
         rag_context = ""
         try:
             relevant_knowledge = rag.search_knowledge(user_message, n_results=3)
@@ -184,33 +203,20 @@ def ask_gemini_with_rag(user_message: str, context_data: str = "", history=None)
 
         messages.append({"role": "user", "content": user_message})
 
-        response = requests.post(
-            GEMINI_URL,
-            headers={
-                "Authorization": f"Bearer {GEMINI_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "gemini-2.5-flash",
-                "messages": messages,
-                "max_tokens": 2000,
-                "temperature": 0.7,
-            },
+        # Gọi Ollama Cloud (OpenAI‑compatible)
+        response = ollama_client.chat.completions.create(
+            model="gemini-3-flash-preview",   # hoặc gemini-3-pro-preview nếu cần mạnh hơn
+            messages=messages,
+            max_tokens=2000,
+            temperature=0.7,
             timeout=30
         )
 
-        if response.status_code != 200:
-            return f"Lỗi Gemini API: {response.status_code} - {response.text}"
-
-        data = response.json()
-        if "choices" not in data:
-            return f"Lỗi cấu trúc phản hồi: {data}"
-
-        return data["choices"][0]["message"]["content"]
+        return response.choices[0].message.content
     except Exception as e:
-        return f"Lỗi Gemini API: {e}"
+        return f"Lỗi Ollama API: {e}"
 
-def ask_gemini_with_vision(question: str, image_base64: str, mime_type: str = "image/jpeg") -> str:
+def ask_ollama_with_vision(question: str, image_base64: str, mime_type: str = "image/jpeg") -> str:
     try:
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         system_prompt = (
@@ -231,31 +237,17 @@ def ask_gemini_with_vision(question: str, image_base64: str, mime_type: str = "i
                 ]
             }
         ]
-        response = requests.post(
-            GEMINI_URL,
-            headers={
-                "Authorization": f"Bearer {GEMINI_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "gemini-2.5-flash",
-                "messages": messages,
-                "max_tokens": 2000,
-                "temperature": 0.7,
-            },
+
+        response = ollama_client.chat.completions.create(
+            model="gemini-3-flash-preview",
+            messages=messages,
+            max_tokens=2000,
+            temperature=0.7,
             timeout=30
         )
-
-        if response.status_code != 200:
-            return f"Lỗi Gemini Vision: {response.status_code} - {response.text}"
-
-        data = response.json()
-        if "choices" not in data:
-            return f"Lỗi cấu trúc phản hồi: {data}"
-
-        return data["choices"][0]["message"]["content"]
+        return response.choices[0].message.content
     except Exception as e:
-        return f"Lỗi Gemini Vision: {e}"
+        return f"Lỗi Ollama Vision: {e}"
 
 def detect_coin_in_text(text: str) -> str:
     for key, symbol in COIN_MAP.items():
@@ -265,10 +257,10 @@ def detect_coin_in_text(text: str) -> str:
 
 # ──── Handlers ──────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_owner(update, context):
+    if not await check_permission(update, context):
         return
     await update.message.reply_text(
-        "👋 Xin chào! Tui là Crypto AI Bot v2 (Gemini + RAG).\n\n"
+        "👋 Xin chào! Tui là Crypto AI Bot v2 (Ollama + RAG).\n\n"
         "📊 Giá & Data:\n"
         "/price btc — Xem giá\n"
         "/ta btc 1h — Phân tích TA (1h/4h/1d)\n"
@@ -285,7 +277,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_owner(update, context):
+    if not await check_permission(update, context):
         return
     args = context.args
     if not args:
@@ -295,7 +287,7 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(get_price(symbol))
 
 async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_owner(update, context):
+    if not await check_permission(update, context):
         return
     args = context.args
     if not args:
@@ -319,27 +311,25 @@ async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     history = get_recent_messages(user_id, limit=10)
 
-    gemini_answer = ask_gemini_with_rag(
+    answer = ask_ollama_with_rag(
         f"Phân tích kỹ thuật {symbol} timeframe {tf}. "
         "Xu hướng hiện tại? Vùng support/resistance quan trọng? Nên chờ gì?",
         context_data=ta_summary["data_for_grok"],
         history=history
     )
 
-    # Lưu vào bộ nhớ ngắn hạn
     save_message(user_id, "user", f"/ta {symbol} {tf}")
-    save_message(user_id, "assistant", gemini_answer)
-    
-    # Lưu phân tích vào RAG (bộ nhớ dài hạn)
+    save_message(user_id, "assistant", answer)
+
     try:
-        rag.save_analysis(symbol, gemini_answer, ta_summary)
+        rag.save_analysis(symbol, answer, ta_summary)
     except Exception as e:
         print(f"Lỗi lưu RAG: {e}")
 
-    await update.message.reply_text(f"🤖 Gemini phân tích:\n\n{gemini_answer}")
+    await update.message.reply_text(f"🤖 Ollama phân tích:\n\n{answer}")
 
 async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_owner(update, context):
+    if not await check_permission(update, context):
         return
     symbol = None
     if context.args:
@@ -348,7 +338,7 @@ async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(get_news(symbol))
 
 async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_owner(update, context):
+    if not await check_permission(update, context):
         return
     if not context.args:
         await update.message.reply_text("Dùng: /ask RSI 30 trên BTC 4h có phải oversold không?")
@@ -356,13 +346,13 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question = " ".join(context.args)
     user_id = update.effective_user.id
     history = get_recent_messages(user_id, limit=10)
-    answer = ask_gemini_with_rag(question, history=history)
+    answer = ask_ollama_with_rag(question, history=history)
     save_message(user_id, "user", f"/ask {question}")
     save_message(user_id, "assistant", answer)
     await update.message.reply_text(answer)
 
 async def teach_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_owner(update, context):
+    if not await check_permission(update, context):
         return
     if not context.args:
         await update.message.reply_text(
@@ -381,8 +371,7 @@ async def teach_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     description = parts[1].strip()
 
     save_pattern(name, description)
-    
-    # Lưu pattern vào RAG (bộ nhớ dài hạn)
+
     try:
         rag.add_knowledge(
             content=f"Pattern: {name} - {description}",
@@ -390,7 +379,7 @@ async def teach_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         print(f"Lỗi lưu pattern vào RAG: {e}")
-    
+
     await update.message.reply_text(
         f"✅ Đã lưu pattern: *{name}*\n\n"
         f"Mô tả: {description}\n\n"
@@ -399,7 +388,7 @@ async def teach_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def patterns_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_owner(update, context):
+    if not await check_permission(update, context):
         return
     patterns = list_patterns()
     if not patterns:
@@ -411,11 +400,9 @@ async def patterns_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(patterns)
 
 async def memory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xem những kiến thức bot đã học (RAG)"""
-    if not await check_owner(update, context):
+    if not await check_permission(update, context):
         return
     try:
-        # Lấy 10 kiến thức gần nhất từ RAG
         results = rag.collection.get(limit=10)
         if results['documents'] and results['documents'][0]:
             msg = "📚 **Kiến thức bot đã học (RAG):**\n\n"
@@ -429,7 +416,7 @@ async def memory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Lỗi truy xuất RAG: {e}")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_owner(update, context):
+    if not await check_permission(update, context):
         return
     photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
@@ -438,16 +425,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mime_type = "image/jpeg"
 
     caption = update.message.caption or "Phân tích ảnh này"
-    await update.message.reply_text("🖼️ Đang phân tích ảnh với Gemini Vision...")
+    await update.message.reply_text("🖼️ Đang phân tích ảnh với Ollama Vision...")
 
-    answer = ask_gemini_with_vision(caption, base64_image, mime_type)
+    answer = ask_ollama_with_vision(caption, base64_image, mime_type)
     user_id = update.effective_user.id
     save_message(user_id, "user", "[ảnh] " + caption)
     save_message(user_id, "assistant", answer)
     await update.message.reply_text(answer)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_owner(update, context):
+    if not await check_permission(update, context):
         return
     user_id = update.effective_user.id
     user_text = update.message.text
@@ -464,7 +451,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_message(user_id, "assistant", reply)
             return
 
-    # 2. Hỏi TA / quyết định long/short/đợi
+    # 2. Hỏi TA / quyết định
     is_trade_question = any(w in text_lower for w in ["long", "short", "đợi", "nên", "mua", "bán", "vào lệnh", "xu hướng"])
     is_ta_question = any(w in text_lower for w in ["ta", "phân tích", "rsi", "macd", "chart", "signal", "tín hiệu"])
     
@@ -481,16 +468,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ta_summary = analyze_ta(df)
             await update.message.reply_text(ta_summary["text"])
             history = get_recent_messages(user_id, limit=10)
-            answer = ask_gemini_with_rag(user_text, context_data=ta_summary["data_for_grok"], history=history)
-            # Lưu phân tích vào RAG
+            answer = ask_ollama_with_rag(user_text, context_data=ta_summary["data_for_grok"], history=history)
             try:
                 rag.save_analysis(coin_symbol, answer, ta_summary)
             except Exception as e:
                 print(f"Lỗi lưu RAG: {e}")
         else:
-            answer = ask_gemini_with_rag(user_text, history=get_recent_messages(user_id, limit=10))
+            answer = ask_ollama_with_rag(user_text, history=get_recent_messages(user_id, limit=10))
         
-        await update.message.reply_text(f"🤖 Gemini:\n\n{answer}")
+        await update.message.reply_text(f"🤖 Ollama:\n\n{answer}")
         save_message(user_id, "assistant", answer)
         return
 
@@ -501,10 +487,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_message(user_id, "assistant", reply)
         return
 
-    # 4. Mặc định: hỏi AI với RAG
+    # 4. Mặc định: hỏi AI
     await update.message.reply_text("Đang xử lý...")
     history = get_recent_messages(user_id, limit=10)
-    answer = ask_gemini_with_rag(user_text, history=history)
+    answer = ask_ollama_with_rag(user_text, history=history)
     await update.message.reply_text(answer)
     save_message(user_id, "assistant", answer)
 
@@ -518,10 +504,10 @@ def main():
     app.add_handler(CommandHandler("ask", ask_cmd))
     app.add_handler(CommandHandler("teach", teach_cmd))
     app.add_handler(CommandHandler("patterns", patterns_cmd))
-    app.add_handler(CommandHandler("memory", memory_cmd))  # Lệnh xem RAG
+    app.add_handler(CommandHandler("memory", memory_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🚀 Crypto AI Bot v2 (Gemini + RAG) đang chạy...")
+    print("🚀 Crypto AI Bot v2 (Ollama + RAG) đang chạy...")
     app.run_polling()
 
 if __name__ == "__main__":
