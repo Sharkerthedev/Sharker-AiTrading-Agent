@@ -114,7 +114,7 @@ def ask_grok(user_message: str, context_data: str = "") -> str:
             "Authorization": f"Bearer {GROK_API_KEY}",
             "Content-Type": "application/json",
         }, json={
-            "model": "grok-4-2",
+            "model": "grok-4-2-fast-non-reasoning",
             "messages": messages,
             "max_tokens": 600,
             "temperature": 0.7,
