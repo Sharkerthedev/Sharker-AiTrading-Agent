@@ -1,4 +1,4 @@
-# 🤖 Crypto AI Bot v2 (Gemini + RAG)
+# 🤖 Crypto AI Bot v2 (Ollama + RAG)
 
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot-blue.svg)](https://core.telegram.org/bots)
@@ -17,7 +17,7 @@
 - **Nhiều khung thời gian:** Hỗ trợ 1h, 4h, 1d, 1w
 - **Dữ liệu realtime:** Lấy từ CryptoCompare (tổng hợp 300+ sàn giao dịch)
 
-### 🧠 AI Gemini tích hợp
+### 🧠 AI Ollama tích hợp
 - **Phân tích thông minh:** Gemini 2.5 Flash đọc và giải thích các chỉ báo TA
 - **Nhận diện ảnh:** Phân tích chart qua ảnh chụp màn hình (Gemini Vision)
 - **Trả lời tự nhiên:** Hiểu tiếng Việt, trả lời như trader kinh nghiệm
