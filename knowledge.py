@@ -2,7 +2,8 @@ import json
 import os
 from datetime import datetime
 
-KNOWLEDGE_FILE = "patterns.json"
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+KNOWLEDGE_FILE = os.path.join(DATA_DIR, "patterns.json")
 
 
 def _load() -> list:
