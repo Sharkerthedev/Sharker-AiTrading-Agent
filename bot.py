@@ -3,7 +3,7 @@ import requests
 import datetime
 import base64
 import sqlite3
-from openai import OpenAI  # <-- thêm để dùng Ollama
+from openai import OpenAI
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, MessageHandler,
@@ -14,10 +14,10 @@ from knowledge import save_pattern, get_patterns, list_patterns
 from rag_memory import RagMemory
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY")          # key từ ollama.com
+OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY")
 CC_API_KEY = os.environ.get("CRYPTOCOMPARE_KEY")
 
-# Danh sách user được phép (cách nhau bằng dấu phẩy)
+# Danh sách user được phép
 ALLOWED_USERS_STR = os.environ.get("ALLOWED_USERS", "")
 ALLOWED_USERS = set()
 if ALLOWED_USERS_STR:
@@ -26,16 +26,13 @@ if ALLOWED_USERS_STR:
             ALLOWED_USERS.add(int(uid.strip()))
         except ValueError:
             pass
-
-# Giữ lại OWNER_ID cho tương thích (nếu có)
 OWNER_ID = int(os.environ.get("OWNER_ID", 0))
 if OWNER_ID:
     ALLOWED_USERS.add(OWNER_ID)
 
-# Cấu hình client Ollama (OpenAI‑compatible)
 ollama_client = OpenAI(
     api_key=OLLAMA_API_KEY,
-    base_url="https://ollama.com/v1"          # endpoint Ollama Cloud
+    base_url="https://ollama.com/v1"
 )
 
 COIN_MAP = {
@@ -54,10 +51,9 @@ TIMEFRAME_MAP = {
     "1d": "histoday", "1w": "histoday",
 }
 
-# Khởi tạo RAG Memory
 rag = RagMemory()
 
-# ──── Database cho bộ nhớ hội thoại (short-term) ─────────────────
+# ──── Database ngắn hạn ─────────────────────────────────────────
 DB_PATH = "chat_memory.db"
 
 def init_db():
@@ -73,6 +69,9 @@ def init_db():
     conn.close()
 
 def save_message(user_id, role, content):
+    # Giới hạn độ dài tin nhắn
+    if len(content) > 1000:
+        content = content[:1000] + "..."
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     timestamp = datetime.datetime.now().isoformat()
@@ -81,7 +80,7 @@ def save_message(user_id, role, content):
     conn.commit()
     conn.close()
 
-def get_recent_messages(user_id, limit=10):
+def get_recent_messages(user_id, limit=7):  # giảm từ 10 xuống 7
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT role, content FROM messages WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
@@ -100,7 +99,7 @@ async def check_permission(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return False
     return True
 
-# ──── Helper: lấy giá hiện tại ─────────────────────────────────
+# ──── Helper ─────────────────────────────────────────────────────
 def get_current_price(symbol: str) -> float:
     try:
         url = "https://min-api.cryptocompare.com/data/price"
@@ -158,9 +157,8 @@ def get_news(symbol: str = None) -> str:
     except Exception as e:
         return f"Lỗi lấy news: {e}"
 
-# ──── Ollama API với RAG (bộ nhớ dài hạn) ────────────────────────
+# ──── AI call (Ollama) với prompt rút gọn ────────────────────────
 def ask_ollama_with_rag(user_message: str, context_data: str = "", history=None) -> str:
-    """Gọi Ollama Cloud với context từ RAG và short-term history"""
     try:
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         patterns = get_patterns()
@@ -170,10 +168,9 @@ def ask_ollama_with_rag(user_message: str, context_data: str = "", history=None)
                 f"- [{p['name']}]: {p['description']}" for p in patterns
             )
 
-        # Tìm kiếm kiến thức liên quan từ RAG
         rag_context = ""
         try:
-            relevant_knowledge = rag.search_knowledge(user_message, n_results=2)
+            relevant_knowledge = rag.search_knowledge(user_message, n_results=2)  # giảm từ 3 xuống 2
             if relevant_knowledge:
                 rag_context = "\n\n**📚 Kiến thức đã học trước đây:**\n" + "\n".join(relevant_knowledge)
         except Exception as e:
@@ -182,9 +179,10 @@ def ask_ollama_with_rag(user_message: str, context_data: str = "", history=None)
         system_prompt = (
             "Bạn là AI assistant chuyên về crypto trading và phân tích kỹ thuật (TA). "
             f"Hôm nay là {current_time}. "
-            "Trả lời bằng tiếng Việt, ngắn gọn, thực tế, như một trader kinh nghiệm. "
-            "Phân tích dựa trên RSI, MACD, Bollinger Bands, EMA, support/resistance, volume. "
-            "Bạn có thể đưa ra nhận định về xu hướng (tăng/giảm/đi ngang) và các kịch bản, nhưng không đưa ra lời khuyên tài chính trực tiếp (không nói 'nên mua' hay 'nên bán')."
+            "Trả lời bằng tiếng Việt, **ngắn gọn, xúc tích, đủ ý**. "
+            "Không liệt kê lại toàn bộ chỉ báo, chỉ nêu các điểm quan trọng (xu hướng, vùng hỗ trợ/kháng cự, nhận định). "
+            "Phân tích dựa trên RSI, MACD, EMA, Bollinger Bands, volume. "
+            "Bạn có thể đưa ra nhận định về xu hướng (tăng/giảm/đi ngang) nhưng không đưa ra lời khuyên tài chính trực tiếp."
             + pattern_text
             + rag_context
         )
@@ -203,15 +201,13 @@ def ask_ollama_with_rag(user_message: str, context_data: str = "", history=None)
 
         messages.append({"role": "user", "content": user_message})
 
-        # Gọi Ollama Cloud (OpenAI‑compatible)
         response = ollama_client.chat.completions.create(
-            model="gemini-3-flash-preview",   # hoặc gemini-3-pro-preview nếu cần mạnh hơn
+            model="gemini-3-flash-preview",
             messages=messages,
-            max_tokens=2000,
+            max_tokens=1500,   # giảm nhẹ để phản hồi ngắn hơn
             temperature=0.7,
             timeout=30
         )
-
         return response.choices[0].message.content
     except Exception as e:
         return f"Lỗi Ollama API: {e}"
@@ -222,9 +218,9 @@ def ask_ollama_with_vision(question: str, image_base64: str, mime_type: str = "i
         system_prompt = (
             "Bạn là AI assistant chuyên về crypto trading và phân tích kỹ thuật (TA). "
             f"Hôm nay là {current_time}. "
-            "Trả lời bằng tiếng Việt, ngắn gọn, thực tế, như một trader kinh nghiệm. "
+            "Trả lời bằng tiếng Việt, ngắn gọn, xúc tích. "
             "Phân tích hình ảnh được cung cấp và trả lời câu hỏi. "
-            "Bạn có thể đưa ra nhận định về xu hướng nhưng không đưa ra lời khuyên tài chính trực tiếp."
+            "Chỉ nêu các điểm quan trọng."
         )
         data_url = f"data:{mime_type};base64,{image_base64}"
         messages = [
@@ -241,7 +237,7 @@ def ask_ollama_with_vision(question: str, image_base64: str, mime_type: str = "i
         response = ollama_client.chat.completions.create(
             model="gemini-3-flash-preview",
             messages=messages,
-            max_tokens=2000,
+            max_tokens=1500,
             temperature=0.7,
             timeout=30
         )
@@ -306,14 +302,15 @@ async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     ta_summary = analyze_ta(df)
-    await update.message.reply_text(ta_summary["text"])
+    # KHÔNG gửi bảng thô nữa – chỉ gửi phân tích AI
+    # await update.message.reply_text(ta_summary["text"])   # comment dòng này
 
     user_id = update.effective_user.id
-    history = get_recent_messages(user_id, limit=10)
+    history = get_recent_messages(user_id, limit=7)
 
     answer = ask_ollama_with_rag(
         f"Phân tích kỹ thuật {symbol} timeframe {tf}. "
-        "Xu hướng hiện tại? Vùng support/resistance quan trọng? Nên chờ gì?",
+        "Xu hướng hiện tại? Vùng support/resistance quan trọng? Nhận định ngắn gọn?",
         context_data=ta_summary["data_for_grok"],
         history=history
     )
@@ -345,7 +342,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     question = " ".join(context.args)
     user_id = update.effective_user.id
-    history = get_recent_messages(user_id, limit=10)
+    history = get_recent_messages(user_id, limit=7)
     answer = ask_ollama_with_rag(question, history=history)
     save_message(user_id, "user", f"/ask {question}")
     save_message(user_id, "assistant", answer)
@@ -466,15 +463,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         df = get_ohlcv(coin_symbol, endpoint, limit=1000, cc_key=CC_API_KEY)
         if df is not None:
             ta_summary = analyze_ta(df)
-            await update.message.reply_text(ta_summary["text"])
-            history = get_recent_messages(user_id, limit=10)
+            # không gửi bảng thô nữa
+            # await update.message.reply_text(ta_summary["text"])
+            history = get_recent_messages(user_id, limit=7)
             answer = ask_ollama_with_rag(user_text, context_data=ta_summary["data_for_grok"], history=history)
             try:
                 rag.save_analysis(coin_symbol, answer, ta_summary)
             except Exception as e:
                 print(f"Lỗi lưu RAG: {e}")
         else:
-            answer = ask_ollama_with_rag(user_text, history=get_recent_messages(user_id, limit=10))
+            answer = ask_ollama_with_rag(user_text, history=get_recent_messages(user_id, limit=7))
         
         await update.message.reply_text(f"🤖 Ollama:\n\n{answer}")
         save_message(user_id, "assistant", answer)
@@ -489,7 +487,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 4. Mặc định: hỏi AI
     await update.message.reply_text("Đang xử lý...")
-    history = get_recent_messages(user_id, limit=10)
+    history = get_recent_messages(user_id, limit=6)
     answer = ask_ollama_with_rag(user_text, history=history)
     await update.message.reply_text(answer)
     save_message(user_id, "assistant", answer)
