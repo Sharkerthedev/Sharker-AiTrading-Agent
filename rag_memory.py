@@ -1,23 +1,20 @@
 import chromadb
-from chromadb.utils import embedding_functions
+import os
 import datetime
 
 CHROMA_PATH = "./chroma_data"
-EMBED_MODEL = "all-MiniLM-L6-v2"
 
 class RagMemory:
     def __init__(self):
         self.client = chromadb.PersistentClient(path=CHROMA_PATH)
-        self.embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=EMBED_MODEL
-        )
+        # Dùng embedding mặc định (ONNX, ~20-30 MB)
         self.collection = self.client.get_or_create_collection(
             name="trading_knowledge",
-            embedding_function=self.embedding_func
+            embedding_function=chromadb.utils.embedding_functions.DefaultEmbeddingFunction()
         )
 
     def _split_text(self, text: str, chunk_size: int = 500, overlap: int = 50):
-        """Đơn giản hóa split text mà không cần langchain."""
+        """Chia văn bản thành các đoạn nhỏ (không dùng langchain)."""
         if len(text) <= chunk_size:
             return [text]
         chunks = []
@@ -25,7 +22,6 @@ class RagMemory:
         while start < len(text):
             end = start + chunk_size
             if end < len(text):
-                # cố gắng cắt ở khoảng trắng
                 last_space = text.rfind(' ', start, end)
                 if last_space != -1:
                     end = last_space
@@ -36,7 +32,7 @@ class RagMemory:
         return chunks
 
     def add_knowledge(self, content: str, metadata: dict):
-        """Thêm kiến thức vào bộ nhớ dài hạn"""
+        """Thêm kiến thức vào bộ nhớ dài hạn."""
         chunks = self._split_text(content, chunk_size=500, overlap=50)
         for i, chunk in enumerate(chunks):
             doc_id = f"{metadata.get('type', 'knowledge')}_{datetime.datetime.now().timestamp()}_{i}"
@@ -47,7 +43,7 @@ class RagMemory:
             )
 
     def search_knowledge(self, query: str, n_results: int = 5) -> list:
-        """Tìm kiếm kiến thức liên quan đến câu hỏi"""
+        """Tìm kiếm kiến thức liên quan đến câu hỏi."""
         results = self.collection.query(
             query_texts=[query],
             n_results=n_results
@@ -57,7 +53,7 @@ class RagMemory:
         return []
 
     def save_analysis(self, symbol: str, analysis: str, indicators: dict):
-        """Lưu phân tích TA vào bộ nhớ"""
+        """Lưu phân tích TA vào bộ nhớ."""
         content = f"Phân tích {symbol}: {analysis}\nCác chỉ báo: {indicators}"
         metadata = {
             "type": "ta_analysis",
