@@ -13,7 +13,7 @@ class RagMemory:
             embedding_function=chromadb.utils.embedding_functions.DefaultEmbeddingFunction()
         )
 
-    def _split_text(self, text: str, chunk_size: int = 500, overlap: int = 50):
+    def _split_text(self, text: str, chunk_size: int = 300, overlap: int = 50):
         """Chia văn bản thành các đoạn nhỏ (không dùng langchain)."""
         if len(text) <= chunk_size:
             return [text]
