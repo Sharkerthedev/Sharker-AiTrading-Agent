@@ -197,7 +197,7 @@ def ask_ollama_with_rag(user_message: str, context_data: str = "", history=None)
         response = ollama_client.chat.completions.create(
             model="gemini-3-flash-preview",
             messages=messages,
-            max_tokens=1000,
+            max_tokens=1500,
             temperature=0.7,
             timeout=30
         )
