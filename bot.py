@@ -53,7 +53,8 @@ TIMEFRAME_MAP = {
 
 rag = RagMemory()
 
-DB_PATH = "chat_memory.db"
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+DB_PATH = os.path.join(DATA_DIR, "chat_memory.db")
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
