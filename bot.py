@@ -46,11 +46,6 @@ COIN_MAP = {
     "link": "LINK", "uni": "UNI",
 }
 
-TIMEFRAME_MAP = {
-    "1h": "histohour", "4h": "histohour",
-    "1d": "histoday", "1w": "histoday",
-}
-
 rag = RagMemory()
 
 DATA_DIR = os.environ.get("DATA_DIR", ".")
@@ -171,11 +166,12 @@ def ask_ollama_with_rag(user_message: str, context_data: str = "", history=None)
             print(f"Lỗi RAG search: {e}")
 
         system_prompt = (
-            "Bạn là AI assistant chuyên về crypto trading và phân tích kỹ thuật (TA). "
+            "Bạn là Sophia, trader nữ chuyên phân tích crypto. "
             f"Hôm nay là {current_time}. "
-            "Trả lời bằng tiếng Việt, ngắn gọn, thực tế, như một trader kinh nghiệm. "
-            "Chỉ phân tích khi người dùng yêu cầu cụ thể. Không tự động thêm bảng chỉ số. "
-            "Hãy trả lời tối đa 5-7 câu, tập trung vào ý chính."
+            "Bạn sẽ nhận được dữ liệu kỹ thuật đầy đủ (giá, RSI, MACD, EMA, Volume, PVSRA, v.v.). "
+            "HÃY DỰA VÀO DỮ LIỆU NÀY LÀM CƠ SỞ CHÍNH để xác định xu hướng, vùng hỗ trợ/kháng cự và tín hiệu. "
+            "Sau đó, bổ sung các quy tắc, mẫu hình đã học (Fibonacci, mô hình nến, v.v.) để tăng độ chính xác. "
+            "Trả lời bằng tiếng Việt, ngắn gọn, tập trung vào ý chính."
             + pattern_text
             + rag_context
         )
@@ -209,11 +205,11 @@ def ask_ollama_with_vision(question: str, image_base64: str, mime_type: str = "i
     try:
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         system_prompt = (
-            "Bạn là AI assistant chuyên về crypto trading và phân tích kỹ thuật (TA). "
+            "Bạn là Sophia, trader nữ chuyên phân tích crypto. "
             f"Hôm nay là {current_time}. "
             "Trả lời bằng tiếng Việt, ngắn gọn, thực tế, như một trader kinh nghiệm. "
             "Phân tích hình ảnh được cung cấp và trả lời câu hỏi. "
-            "Không tự động thêm bảng chỉ số, chỉ trả lời ngắn gọn."
+            "Chỉ dựa vào ảnh để đưa ra nhận định."
         )
         data_url = f"data:{mime_type};base64,{image_base64}"
         messages = [
@@ -244,15 +240,29 @@ def detect_coin_in_text(text: str) -> str:
             return symbol
     return None
 
-# Handlers
+def detect_timeframe_in_text(text: str) -> str:
+    """Phát hiện timeframe (5m,15m,1h,4h,1d,1w) trong câu hỏi."""
+    text = text.lower()
+    if "5m" in text:
+        return "5m"
+    if "15m" in text:
+        return "15m"
+    if "4h" in text:
+        return "4h"
+    if "1d" in text:
+        return "1d"
+    if "1w" in text:
+        return "1w"
+    return "1h"   # mặc định
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_permission(update, context):
         return
     await update.message.reply_text(
-        "👋 Xin chào! Tui là Crypto AI Bot v2 (Ollama + RAG).\n\n"
+        "👋 Xin chào! Tui là Sophia – Crypto AI Bot v2 (Ollama + RAG).\n\n"
         "📊 Giá & Data:\n"
         "/price btc — Xem giá\n"
-        "/ta btc 1h — Phân tích TA (1h/4h/1d)\n"
+        "/ta btc 1h — Phân tích TA (5m/15m/1h/4h/1d/1w)\n"
         "/news — Tin tức mới nhất\n"
         "/news btc — Tin về coin cụ thể\n\n"
         "🤖 AI & Học:\n"
@@ -262,7 +272,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/memory — Xem kiến thức bot đã học (RAG)\n\n"
         "🖼️ Gửi ảnh (có hoặc không caption) để phân tích!\n\n"
         "Chat tự nhiên tiếng Việt cũng được!\n"
-        "Ví dụ: 'btc hôm nay nên long hay short?'"
+        "Ví dụ: 'btc 5m nên long hay short?'"
     )
 
 async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -280,16 +290,24 @@ async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     args = context.args
     if not args:
-        await update.message.reply_text("Dùng: /ta btc 1h  (timeframe: 1h, 4h, 1d)")
+        await update.message.reply_text("Dùng: /ta btc 5m  (timeframe: 5m,15m,1h,4h,1d,1w)")
         return
 
     symbol = COIN_MAP.get(args[0].lower(), args[0].upper())
     tf = args[1].lower() if len(args) > 1 else "1h"
+    if tf not in ["5m", "15m", "1h", "4h", "1d", "1w"]:
+        await update.message.reply_text("Timeframe không hợp lệ. Chọn: 5m, 15m, 1h, 4h, 1d, 1w")
+        return
 
     await update.message.reply_text(f"⏳ Đang phân tích {symbol} {tf}...")
 
-    endpoint = TIMEFRAME_MAP.get(tf, "histohour")
-    df = get_ohlcv(symbol, endpoint, limit=1000, cc_key=CC_API_KEY)
+    # Điều chỉnh limit để tránh quá tải API (CryptoCompare free giới hạn)
+    if tf in ["5m", "15m"]:
+        limit = 300   # số nến 5m/15m cần lấy
+    else:
+        limit = 1000
+
+    df = get_ohlcv(symbol, tf, limit=limit, cc_key=CC_API_KEY)
     if df is None:
         await update.message.reply_text("Không lấy được dữ liệu OHLCV.")
         return
@@ -301,7 +319,8 @@ async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     prompt = (
         f"Dữ liệu kỹ thuật {symbol} timeframe {tf}:\n{ta_summary['data_for_grok']}\n\n"
-        "Hãy phân tích ngắn gọn: xu hướng hiện tại? Vùng hỗ trợ/kháng cự quan trọng? Điểm cần chú ý?"
+        "Hãy phân tích ngắn gọn: xu hướng hiện tại? Vùng hỗ trợ/kháng cự quan trọng? Điểm cần chú ý? "
+        "Nếu có tín hiệu PVSRA hoặc mẫu hình đặc biệt, hãy đề cập."
     )
 
     answer = ask_ollama_with_rag(
@@ -453,13 +472,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             coin_symbol = "BTC"
             await update.message.reply_text(f"🔍 Không thấy tên coin, tôi sẽ phân tích BTC.")
         
-        await update.message.reply_text(f"⏳ Đang phân tích {coin_symbol} 1h...")
-        endpoint = "histohour"
-        df = get_ohlcv(coin_symbol, endpoint, limit=1000, cc_key=CC_API_KEY)
+        # Phát hiện timeframe từ câu hỏi
+        tf = detect_timeframe_in_text(text_lower)
+        await update.message.reply_text(f"⏳ Đang phân tích {coin_symbol} {tf}...")
+        
+        # Điều chỉnh limit cho khung nhỏ
+        if tf in ["5m", "15m"]:
+            limit = 300
+        else:
+            limit = 1000
+
+        df = get_ohlcv(coin_symbol, tf, limit=limit, cc_key=CC_API_KEY)
         if df is not None:
             ta_summary = analyze_ta(df)
             prompt = (
-                f"Dữ liệu kỹ thuật {coin_symbol} khung 1h:\n{ta_summary['data_for_grok']}\n\n"
+                f"Dữ liệu kỹ thuật {coin_symbol} khung {tf}:\n{ta_summary['data_for_grok']}\n\n"
                 f"Câu hỏi: {user_text}\nHãy trả lời ngắn gọn, tập trung vào phân tích."
             )
             history = get_recent_messages(user_id, limit=7)
@@ -471,7 +498,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             answer = ask_ollama_with_rag(user_text, history=get_recent_messages(user_id, limit=7))
         
-        await update.message.reply_text(f"🤖 Ollama:\n\n{answer}")
+        await update.message.reply_text(f"🤖 Sophia:\n\n{answer}")
         save_message(user_id, "assistant", answer)
         return
 
@@ -484,7 +511,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Mặc định: hỏi AI
     await update.message.reply_text("Đang xử lý...")
-    history = get_recent_messages(user_id, limit=6)
+    history = get_recent_messages(user_id, limit=7)
     answer = ask_ollama_with_rag(user_text, history=history)
     await update.message.reply_text(answer)
     save_message(user_id, "assistant", answer)
@@ -501,7 +528,7 @@ def main():
     app.add_handler(CommandHandler("memory", memory_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🚀 Crypto AI Bot v2 (Ollama + RAG) đang chạy...")
+    print("🚀 Sophia – Crypto AI Bot v2 (Ollama + RAG) đang chạy...")
     app.run_polling()
 
 if __name__ == "__main__":
