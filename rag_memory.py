@@ -2,7 +2,8 @@ import chromadb
 import os
 import datetime
 
-CHROMA_PATH = "./chroma_data"
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+CHROMA_PATH = os.path.join(DATA_DIR, "chroma_data")
 
 class RagMemory:
     def __init__(self):
