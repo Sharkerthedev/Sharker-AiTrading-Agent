@@ -33,7 +33,7 @@ class RagMemory:
 
     def add_knowledge(self, content: str, metadata: dict):
         """Thêm kiến thức vào bộ nhớ dài hạn."""
-        chunks = self._split_text(content, chunk_size=500, overlap=50)
+        chunks = self._split_text(content, chunk_size=300, overlap=50)
         for i, chunk in enumerate(chunks):
             doc_id = f"{metadata.get('type', 'knowledge')}_{datetime.datetime.now().timestamp()}_{i}"
             self.collection.add(
