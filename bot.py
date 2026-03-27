@@ -173,7 +173,7 @@ def ask_ollama_with_rag(user_message: str, context_data: str = "", history=None)
         # Tìm kiếm kiến thức liên quan từ RAG
         rag_context = ""
         try:
-            relevant_knowledge = rag.search_knowledge(user_message, n_results=3)
+            relevant_knowledge = rag.search_knowledge(user_message, n_results=2)
             if relevant_knowledge:
                 rag_context = "\n\n**📚 Kiến thức đã học trước đây:**\n" + "\n".join(relevant_knowledge)
         except Exception as e:
