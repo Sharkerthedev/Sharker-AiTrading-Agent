@@ -24,7 +24,7 @@ def save_message(user_id, role, content):
     conn.commit()
     conn.close()
 
-def get_recent_messages(user_id, limit=10):
+def get_recent_messages(user_id, limit=6):
     """Lấy tin nhắn gần nhất của user (cả user và bot)"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
