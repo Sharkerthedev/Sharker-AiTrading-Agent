@@ -260,47 +260,186 @@ def detect_timeframe_in_text(text: str) -> str:
         return "1h"
     return "1h"   # mặc định
 
-# ──── Scheduler dùng JobQueue (check BTC 15m) ───────────────────
-last_signal = {"type": None, "time": 0}
+# ──── Signal Engine ──────────────────────────────────────────────
+
+def _parse_indicators(df):
+    """
+    Tính indicators thẳng từ DataFrame — không parse text.
+    Trả về dict các giá trị cần cho cả 2 hệ thống.
+    """
+    import ta as ta_lib
+    close  = df["close"]
+    volume = df["volume"]
+
+    rsi       = ta_lib.momentum.RSIIndicator(close, window=14).rsi()
+    macd_obj  = ta_lib.trend.MACD(close)
+    macd_hist = macd_obj.macd_diff()
+    macd_line = macd_obj.macd()
+    macd_sig  = macd_obj.macd_signal()
+
+    ema = {}
+    for p in [5, 13, 50, 200, 800]:
+        if len(close) >= p:
+            ema[p] = ta_lib.trend.EMAIndicator(close, window=p).ema_indicator()
+        else:
+            ema[p] = None
+
+    vol_sma20 = volume.rolling(20).mean()
+
+    return {
+        "price":      close.iloc[-1],
+        "rsi":        rsi.iloc[-1],
+        "rsi_prev":   rsi.iloc[-2],
+        "macd_hist":  macd_hist.iloc[-1],
+        "macd_hist_prev": macd_hist.iloc[-2],
+        "macd_line":  macd_line.iloc[-1],
+        "macd_sig":   macd_sig.iloc[-1],
+        "ema5":       ema[5].iloc[-1]   if ema[5]   is not None else None,
+        "ema13":      ema[13].iloc[-1]  if ema[13]  is not None else None,
+        "ema50":      ema[50].iloc[-1]  if ema[50]  is not None else None,
+        "ema200":     ema[200].iloc[-1] if ema[200]  is not None else None,
+        "ema800":     ema[800].iloc[-1] if ema[800]  is not None else None,
+        "vol_ratio":  volume.iloc[-1] / vol_sma20.iloc[-1] if vol_sma20.iloc[-1] else 1.0,
+    }
+
+
+def system1_check(ind: dict) -> str | None:
+    """
+    Hệ thống 1 — EMA Stack Trend Filter
+    Cần EMA xếp đúng thứ tự + RSI trung tính + MACD hist tăng + Volume
+    Ít signal nhưng chất lượng cao.
+    """
+    p = ind["price"]
+    e5, e13, e50, e200 = ind["ema5"], ind["ema13"], ind["ema50"], ind["ema200"]
+    if any(v is None for v in [e5, e13, e50, e200]):
+        return None
+
+    rsi  = ind["rsi"]
+    hist = ind["macd_hist"]
+    hist_prev = ind["macd_hist_prev"]
+    vol  = ind["vol_ratio"]
+
+    # LONG: EMA stack tăng + giá trên EMA50 + RSI 45-65 + MACD hist tăng + volume
+    if (e5 > e13 > e50 > e200
+            and p > e50
+            and 45 <= rsi <= 65
+            and hist > 0 and hist > hist_prev
+            and vol >= 1.0):
+        return "LONG"
+
+    # SHORT: EMA stack giảm + giá dưới EMA50 + RSI 35-55 + MACD hist giảm + volume
+    if (e5 < e13 < e50 < e200
+            and p < e50
+            and 35 <= rsi <= 55
+            and hist < 0 and hist < hist_prev
+            and vol >= 1.0):
+        return "SHORT"
+
+    return None
+
+
+def system2_check(ind: dict) -> str | None:
+    """
+    Hệ thống 2 — RSI Bounce tại EMA động
+    Giá bounce từ EMA13/50 + RSI vừa chạm vùng extreme rồi đảo chiều
+    + MACD hist đổi dấu (zero cross).
+    Bắt được cả sideway / pullback trong uptrend.
+    """
+    p = ind["price"]
+    e13, e50, e200, e800 = ind["ema13"], ind["ema50"], ind["ema200"], ind["ema800"]
+    if any(v is None for v in [e13, e50, e200]):
+        return None
+
+    rsi      = ind["rsi"]
+    rsi_prev = ind["rsi_prev"]
+    hist     = ind["macd_hist"]
+    hist_prev = ind["macd_hist_prev"]
+
+    # Giá đang gần EMA13 hoặc EMA50 (trong vòng 0.3%)
+    near_ema13 = abs(p - e13) / p < 0.003
+    near_ema50 = abs(p - e50) / p < 0.003
+
+    # LONG: bounce từ EMA + RSI vừa chạm 30-45 rồi tăng + MACD hist đổi âm→dương
+    # + big picture: EMA200 và EMA800 dưới giá
+    if ((near_ema13 or near_ema50)
+            and 30 <= rsi <= 50 and rsi > rsi_prev
+            and hist > 0 and hist_prev <= 0
+            and (e200 is None or p > e200)):
+        return "LONG"
+
+    # SHORT: reject tại EMA + RSI vừa chạm 55-70 rồi giảm + MACD hist đổi dương→âm
+    if ((near_ema13 or near_ema50)
+            and 50 <= rsi <= 70 and rsi < rsi_prev
+            and hist < 0 and hist_prev >= 0
+            and (e200 is None or p < e200)):
+        return "SHORT"
+
+    return None
+
+
+# ──── Scheduler ──────────────────────────────────────────────────
+# Cooldown: tránh spam cùng 1 signal trong vòng 1 giờ
+_last: dict = {"sys1": {"type": None, "time": 0},
+               "sys2": {"type": None, "time": 0}}
+
+COOLDOWN = 3600  # giây
+
 
 async def check_signals(context: ContextTypes.DEFAULT_TYPE):
-    """Gửi tín hiệu mỗi 15 phút, dùng bot từ context."""
-    global last_signal
+    """Chạy mỗi 15 phút — kiểm tra cả 2 hệ thống, fire signal nếu có."""
     try:
-        df = get_ohlcv("BTC", "15m", limit=100, cc_key=CC_API_KEY)
+        df = get_ohlcv("BTC", "15m", limit=900, cc_key=CC_API_KEY)
         if df is None:
             return
+
+        ind        = _parse_indicators(df)
         ta_summary = analyze_ta(df)
+        now        = datetime.datetime.now().timestamp()
 
-        data = ta_summary['data_for_grok']
-        rsi = None
-        macd_hist = None
-        for line in data.split('\n'):
-            if line.startswith("RSI(14):"):
-                rsi = float(line.split(":")[1].strip())
-            if "Histogram:" in line:
-                macd_hist = float(line.split(":")[1].strip())
+        checks = [
+            ("sys1", "📊 Hệ thống 1 — EMA Stack", system1_check(ind)),
+            ("sys2", "📊 Hệ thống 2 — RSI Bounce EMA", system2_check(ind)),
+        ]
 
-        if rsi is None or macd_hist is None:
-            return
+        for sys_key, sys_name, signal_type in checks:
+            if signal_type is None:
+                print(f"[{sys_key}] No signal | RSI={ind['rsi']:.1f} MACD_hist={ind['macd_hist']:.4f}")
+                continue
 
-        signal_type = None
-        if rsi < 30 and macd_hist > 0:
-            signal_type = "BUY"
-        elif rsi > 70 and macd_hist < 0:
-            signal_type = "SELL"
+            last = _last[sys_key]
+            if last["type"] == signal_type and now - last["time"] < COOLDOWN:
+                print(f"[{sys_key}] {signal_type} cooldown, skip")
+                continue
 
-        now = datetime.datetime.now().timestamp()
-        if signal_type and (last_signal["type"] != signal_type or now - last_signal["time"] > 3600):
-            prompt = f"Dữ liệu BTC 15m:\n{ta_summary['data_for_grok']}\n\nCó tín hiệu {signal_type} mạnh, hãy giải thích ngắn gọn."
+            # Có signal mới → hỏi Sophia giải thích
+            emoji  = "🟢" if signal_type == "LONG" else "🔴"
+            prompt = (
+                f"Dữ liệu BTC 15m:\n{ta_summary['data_for_grok']}\n\n"
+                f"{sys_name} phát hiện tín hiệu {signal_type}. "
+                f"Giải thích ngắn gọn lý do và điểm cần lưu ý."
+            )
             answer = ask_ollama_with_rag(prompt, history=None)
+
+            msg = (
+                f"{emoji} *{signal_type} — BTC 15m*\n"
+                f"_{sys_name}_\n\n"
+                f"💰 Giá: ${ind['price']:,.2f}\n"
+                f"📈 RSI: {ind['rsi']:.1f}\n"
+                f"📉 MACD hist: {ind['macd_hist']:.4f}\n"
+                f"📊 EMA5/13/50: {ind['ema5']:.0f} / {ind['ema13']:.0f} / {ind['ema50']:.0f}\n\n"
+                f"🤖 Sophia: {answer}"
+            )
+
             for user_id in ALLOWED_USERS:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=f"🔔 *Tín hiệu {signal_type} BTC 15m*\n\n{answer}",
+                    text=msg,
                     parse_mode="Markdown"
                 )
-            last_signal = {"type": signal_type, "time": now}
+
+            _last[sys_key] = {"type": signal_type, "time": now}
+            print(f"[{sys_key}] Fired {signal_type} signal")
+
     except Exception as e:
         print(f"Lỗi check_signals: {e}")
 
