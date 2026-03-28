@@ -244,8 +244,6 @@ def detect_coin_in_text(text: str) -> str:
 def detect_timeframe_in_text(text: str) -> str:
     """Phát hiện timeframe trong câu hỏi: 5m,15m,1h,4h,1d,1w. Mặc định 1h nếu không có."""
     text = text.lower()
-    # Ưu tiên các khung nhỏ trước để tránh nhầm lẫn (5m có thể bị hiểu là "5m" trong "15m"?)
-    # Dùng regex để chính xác hơn
     import re
     if re.search(r'\b5m\b', text):
         return "5m"
@@ -259,7 +257,7 @@ def detect_timeframe_in_text(text: str) -> str:
         return "1w"
     if re.search(r'\b1h\b', text):
         return "1h"
-    return "1h"   # mặc định
+    return "1h"
 
 # ──── Signal Engine ──────────────────────────────────────────────
 
@@ -387,8 +385,8 @@ COOLDOWN = 3600  # giây
 
 
 async def check_signals(context: ContextTypes.DEFAULT_TYPE):
-        print("DEBUG: check_signals is running")
     """Chạy mỗi 15 phút — kiểm tra cả 2 hệ thống, fire signal nếu có."""
+    print("DEBUG: check_signals is running")
     try:
         df = get_ohlcv("BTC", "15m", limit=900, cc_key=CC_API_KEY)
         if df is None:
