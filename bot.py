@@ -3,6 +3,7 @@ import requests
 import datetime
 import base64
 import sqlite3
+import ta
 from openai import OpenAI
 from telegram import Update
 from telegram.ext import (
@@ -386,6 +387,7 @@ COOLDOWN = 3600  # giây
 
 
 async def check_signals(context: ContextTypes.DEFAULT_TYPE):
+        print("DEBUG: check_signals is running")
     """Chạy mỗi 15 phút — kiểm tra cả 2 hệ thống, fire signal nếu có."""
     try:
         df = get_ohlcv("BTC", "15m", limit=900, cc_key=CC_API_KEY)
