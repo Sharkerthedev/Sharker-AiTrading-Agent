@@ -319,7 +319,7 @@ def system1_check(ind: dict) -> str | None:
     vol  = ind["vol_ratio"]
 
     # LONG: EMA stack tăng + giá trên EMA50 + RSI 45-65 + MACD hist tăng + volume
-    if (e5 > e13 > e50 > e200
+    if (e5 > e13 > e50
             and p > e50
             and 45 <= rsi <= 65
             and hist > 0 and hist > hist_prev
@@ -327,7 +327,7 @@ def system1_check(ind: dict) -> str | None:
         return "LONG"
 
     # SHORT: EMA stack giảm + giá dưới EMA50 + RSI 35-55 + MACD hist giảm + volume
-    if (e5 < e13 < e50 < e200
+    if (e5 < e13 < e50
             and p < e50
             and 35 <= rsi <= 55
             and hist < 0 and hist < hist_prev
