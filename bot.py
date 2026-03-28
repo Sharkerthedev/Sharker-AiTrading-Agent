@@ -241,20 +241,70 @@ def detect_coin_in_text(text: str) -> str:
     return None
 
 def detect_timeframe_in_text(text: str) -> str:
-    """Phát hiện timeframe (5m,15m,1h,4h,1d,1w) trong câu hỏi."""
+    """Phát hiện timeframe trong câu hỏi: 5m,15m,1h,4h,1d,1w. Mặc định 1h nếu không có."""
     text = text.lower()
-    if "5m" in text:
+    # Ưu tiên các khung nhỏ trước để tránh nhầm lẫn (5m có thể bị hiểu là "5m" trong "15m"?)
+    # Dùng regex để chính xác hơn
+    import re
+    if re.search(r'\b5m\b', text):
         return "5m"
-    if "15m" in text:
+    if re.search(r'\b15m\b', text):
         return "15m"
-    if "4h" in text:
+    if re.search(r'\b4h\b', text):
         return "4h"
-    if "1d" in text:
+    if re.search(r'\b1d\b', text):
         return "1d"
-    if "1w" in text:
+    if re.search(r'\b1w\b', text):
         return "1w"
+    if re.search(r'\b1h\b', text):
+        return "1h"
     return "1h"   # mặc định
 
+# ──── Scheduler dùng JobQueue (check BTC 15m) ───────────────────
+last_signal = {"type": None, "time": 0}
+
+async def check_signals(context: ContextTypes.DEFAULT_TYPE):
+    """Gửi tín hiệu mỗi 15 phút, dùng bot từ context."""
+    global last_signal
+    try:
+        df = get_ohlcv("BTC", "15m", limit=100, cc_key=CC_API_KEY)
+        if df is None:
+            return
+        ta_summary = analyze_ta(df)
+
+        data = ta_summary['data_for_grok']
+        rsi = None
+        macd_hist = None
+        for line in data.split('\n'):
+            if line.startswith("RSI(14):"):
+                rsi = float(line.split(":")[1].strip())
+            if "Histogram:" in line:
+                macd_hist = float(line.split(":")[1].strip())
+
+        if rsi is None or macd_hist is None:
+            return
+
+        signal_type = None
+        if rsi < 30 and macd_hist > 0:
+            signal_type = "BUY"
+        elif rsi > 70 and macd_hist < 0:
+            signal_type = "SELL"
+
+        now = datetime.datetime.now().timestamp()
+        if signal_type and (last_signal["type"] != signal_type or now - last_signal["time"] > 3600):
+            prompt = f"Dữ liệu BTC 15m:\n{ta_summary['data_for_grok']}\n\nCó tín hiệu {signal_type} mạnh, hãy giải thích ngắn gọn."
+            answer = ask_ollama_with_rag(prompt, history=None)
+            for user_id in ALLOWED_USERS:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"🔔 *Tín hiệu {signal_type} BTC 15m*\n\n{answer}",
+                    parse_mode="Markdown"
+                )
+            last_signal = {"type": signal_type, "time": now}
+    except Exception as e:
+        print(f"Lỗi check_signals: {e}")
+
+# ──── Handlers ─────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_permission(update, context):
         return
@@ -301,19 +351,13 @@ async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"⏳ Đang phân tích {symbol} {tf}...")
 
-    # Điều chỉnh limit để tránh quá tải API (CryptoCompare free giới hạn)
-    if tf in ["5m", "15m"]:
-        limit = 300   # số nến 5m/15m cần lấy
-    else:
-        limit = 1000
-
+    limit = 300 if tf in ["5m", "15m"] else 1000
     df = get_ohlcv(symbol, tf, limit=limit, cc_key=CC_API_KEY)
     if df is None:
         await update.message.reply_text("Không lấy được dữ liệu OHLCV.")
         return
 
     ta_summary = analyze_ta(df)
-
     user_id = update.effective_user.id
     history = get_recent_messages(user_id, limit=7)
 
@@ -323,11 +367,7 @@ async def ta_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Nếu có tín hiệu PVSRA hoặc mẫu hình đặc biệt, hãy đề cập."
     )
 
-    answer = ask_ollama_with_rag(
-        user_message=prompt,
-        context_data="",
-        history=history
-    )
+    answer = ask_ollama_with_rag(prompt, context_data="", history=history)
 
     save_message(user_id, "user", f"/ta {symbol} {tf}")
     save_message(user_id, "assistant", answer)
@@ -472,16 +512,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             coin_symbol = "BTC"
             await update.message.reply_text(f"🔍 Không thấy tên coin, tôi sẽ phân tích BTC.")
         
-        # Phát hiện timeframe từ câu hỏi
         tf = detect_timeframe_in_text(text_lower)
+        # In log để debug (có thể xóa sau)
+        print(f"DEBUG: detected timeframe: {tf} from text: {user_text}")
         await update.message.reply_text(f"⏳ Đang phân tích {coin_symbol} {tf}...")
         
-        # Điều chỉnh limit cho khung nhỏ
-        if tf in ["5m", "15m"]:
-            limit = 300
-        else:
-            limit = 1000
-
+        limit = 300 if tf in ["5m", "15m"] else 1000
         df = get_ohlcv(coin_symbol, tf, limit=limit, cc_key=CC_API_KEY)
         if df is not None:
             ta_summary = analyze_ta(df)
@@ -511,11 +547,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Mặc định: hỏi AI
     await update.message.reply_text("Đang xử lý...")
-    history = get_recent_messages(user_id, limit=7)
+    history = get_recent_messages(user_id, limit=6)
     answer = ask_ollama_with_rag(user_text, history=history)
     await update.message.reply_text(answer)
     save_message(user_id, "assistant", answer)
 
+# ──── Main ─────────────────────────────────────────────────────
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -528,6 +565,15 @@ def main():
     app.add_handler(CommandHandler("memory", memory_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # Scheduler dùng JobQueue, chạy mỗi 15 phút
+    job_queue = app.job_queue
+    if job_queue:
+        job_queue.run_repeating(check_signals, interval=900, first=10)
+        print("✅ Scheduler chạy mỗi 15 phút (BTC 15m)")
+    else:
+        print("⚠️ JobQueue không khả dụng, scheduler không chạy")
+
     print("🚀 Sophia – Crypto AI Bot v2 (Ollama + RAG) đang chạy...")
     app.run_polling()
 
